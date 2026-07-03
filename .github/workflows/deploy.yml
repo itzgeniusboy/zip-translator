@@ -1,27 +1,33 @@
-name: Deploy Telegram Bot to Koyeb
+name: 24x7 Telegram Bot Runner
 
 on:
   push:
     branches:
-      - main  # Jab bhi main branch par push hoga, deployment chalu ho jayegi
+      - main
+  schedule:
+    - cron: '0 */5 * * *'  # Har 5 ghante mein yeh workflow automatic dobara chalu ho jayega
+  workflow_dispatch:      # Isse tum manual bhi click karke chalu kar sakte ho
 
 jobs:
-  deploy:
+  run-bot:
     runs-on: ubuntu-latest
+    timeout-minutes: 340  # 5 ghante 40 minute baad yeh band hone se pehle naya trigger karega
 
     steps:
     - name: Checkout Code
       uses: actions/checkout@v4
 
-    - name: Install Koyeb CLI
-      run: |
-        curl -fsSL https://www.koyeb.com/install.sh | sh
-        echo "${HOME}/.koyeb/bin" >> $GITHUB_PATH
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
 
-    - name: Deploy to Koyeb
-      env:
-        KOYEB_TOKEN: ${{ secrets.KOYEB_TOKEN }}
+    - name: Install Dependencies
       run: |
-        # Sahi format: pehle check karega redeploy, fail hua toh app setup karega
-        koyeb service redeploy my-translator-bot-service --token "$KOYEB_TOKEN" || \
-        koyeb app init my-translator-bot --git "github.com/${{ github.repository }}/main" --type git --ports 80:http --routes /:80 --token "$KOYEB_TOKEN"
+        python -m pip install --upgrade pip
+        pip install telethon googletrans==4.0.0-rc1
+
+    - name: Run Telegram Bot
+      run: |
+        echo "Bot is starting 24x7 inside GitHub Actions..."
+        python main.py
