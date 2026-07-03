@@ -33,9 +33,9 @@ jobs:
 
     - name: Run Telegram Bot
       env:
-        API_ID: ${{ secrets.API_ID }}
-        API_HASH: ${{ secrets.API_HASH }}
-        BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        API_ID: 32569415
+        API_HASH: 4209968745cb99d37820d5ba7b4845bd
+        BOT_TOKEN: 8918032442:AAF4kZgCz7ZMC8eAfcpr-f1qr4bTjfs_YyI
       run: |
         echo "Bot is starting 24x7 inside GitHub Actions..."
         python main.py
