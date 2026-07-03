@@ -83,9 +83,14 @@ async def handle_new_message(event):
                 pass
 
 async def main():
+    # Token se start kar rahe hain taaki OTP/Number na maange
     await client.start(bot_token=BOT_TOKEN)
-    print("Bot is successfully running via GitHub Actions deployment!")
+    print("Bot is successfully running via GitHub Actions 24x7 loop!")
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    # GitHub workflow container ke liye standard event loop
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        print(f"Error occurred: {e}")
