@@ -9,9 +9,9 @@ BOT_TOKEN = '8945309348:AAGx6zub-rpCH22cnNJzOrvwmQrbqp1hiSU'
 # Aapki Admin ID ✅
 ADMIN_ID = 1969067694  
 
-AD_INTERVAL = 3600  # Har 1 ghante mein ad badlega
+AD_INTERVAL = 3600  # Har 1 ghante mein ad badlega (Testing ke liye 60 kar sakte ho)
 
-# Database shuruat mein bilkul khali hai ❌ (Koi dummy ad nahi)
+# Database shuruat mein bilkul khali hai 
 ADS_DATABASE = []
 
 # Target Channels List
@@ -31,7 +31,7 @@ async def send_smart_ad():
     global current_ad_index
     
     if not ad_loop_active or not ADS_DATABASE or not CONNECTED_CHANNELS:
-        print("⚠️ Ad loop skipped: Loop pause hai, channels khali hain ya koi ad nahi banaya gaya.")
+        print("⚠️ Ad loop skipped: Ya toh list khali hai, ya channels add nahi hain.")
         return
 
     try:
@@ -47,7 +47,7 @@ async def send_smart_ad():
                 except:
                     pass
 
-            # 2. Naya ad bhejdo
+            # 2. Naya ad bhejdo direct username par
             try:
                 new_msg = await client.send_message(
                     channel,
@@ -80,7 +80,7 @@ async def admin_panel(event):
     admin_buttons = [
         [Button.text("➕ Add Ad"), Button.text("📋 List Ads")],
         [Button.text("🗑️ Delete Ad")],
-        [Button.text("📢 Add Channel Username"), Button.text("📊 Show Channels")],
+        [Button.text("📢 Add Channel Username"), Button.text("📢 Connected Channels")],
         [Button.text("🟢 Turn ON Loop"), Button.text("🔴 Turn OFF Loop")]
     ]
     await event.reply("🕹️ **Ad Management Control Panel!**\nNiche diye gaye buttons se control karein:", buttons=admin_buttons)
@@ -94,7 +94,7 @@ async def handle_admin_inputs(event):
     text = event.text.strip()
     user_id = event.sender_id
 
-    # 1. STEP BY STEP CONVERSATION FLOW (Sabse pehle check hoga taaki buttons conflict na karein)
+    # 1. INTERACTIVE CONVERSATION FLOW (Steps tracking)
     if user_id in user_states:
         state = user_states[user_id]["step"]
         
@@ -132,7 +132,6 @@ async def handle_admin_inputs(event):
             user_states[user_id]["data"]["img_url"] = text
             ad_id_counter += 1
             
-            # Naya ad database mein sabse upar daal rahe hain
             ADS_DATABASE.append({
                 "id": ad_id_counter,
                 "text": user_states[user_id]["data"]["text"],
@@ -140,7 +139,6 @@ async def handle_admin_inputs(event):
                 "btn_url": user_states[user_id]["data"]["btn_url"],
                 "img_url": user_states[user_id]["data"]["img_url"]
             })
-            # Index ko reset kar rhe hain taaki naya ad hi turant chalne lage
             current_ad_index = len(ADS_DATABASE) - 1
             del user_states[user_id]
             await event.reply(f"✅ **Aapka naya Ad safely save ho gaya! Ad ID:** `{ad_id_counter}`\nAb aap loop chalu kar sakte hain.")
@@ -157,7 +155,7 @@ async def handle_admin_inputs(event):
                 await event.reply("⚠️ Sahi numerical ID bhejo:")
             return
 
-    # 2. MAIN KEYBOARD BUTTON CLICKS
+    # 2. MAIN KEYBOARD BUTTON CLICKS MATCHING
     if text == "📋 List Ads":
         if not ADS_DATABASE:
             await event.reply("📁 Koi bhi ad saved nahi hai abhi.")
@@ -167,9 +165,9 @@ async def handle_admin_inputs(event):
             res += f"🆔 `Ad ID {ad['id']}`\n📝 Text: {ad['text'][:40]}...\n\n"
         await event.reply(res)
 
-    elif text == "📊 Show Channels":
+    elif text == "📢 Connected Channels":
         if not CONNECTED_CHANNELS:
-            await event.reply("❌ Koi bhi channel list mein add nahi hai.")
+            await event.reply("❌ Koi bhi channel list mein add nahi hai.\n`📢 Add Channel Username` par click karke add karein.")
             return
         res = "📢 **Target Channels List:**\n\n"
         for ch in CONNECTED_CHANNELS:
@@ -184,7 +182,7 @@ async def handle_admin_inputs(event):
             await event.reply("⚠️ Pehle `📢 Add Channel Username` par click karke channel username add karo!")
             return
         ad_loop_active = True
-        await event.reply("🟢 **Scheduler ON! Saare channels par aapka naya ad bheja ja raha hai...**")
+        await event.reply("🟢 **Scheduler ON! Saare channels par aapka ad bheja ja raha hai...**")
         await send_smart_ad()
 
     elif text == "🔴 Turn OFF Loop":
