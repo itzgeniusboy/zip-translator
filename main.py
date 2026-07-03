@@ -6,11 +6,12 @@ API_ID = 32569415
 API_HASH = '4209968745cb99d37820d5ba7b4845bd'
 BOT_TOKEN = '8945309348:AAGx6zub-rpCH22cnNJzOrvwmQrbqp1hiSU'
 
-# Aapki provide ki hui Admin ID set kar di hai ✅
+# Aapki provide ki hui Admin ID set hai ✅
 ADMIN_ID = 1969067694  
 
 AD_INTERVAL = 3600  # Har 1 ghante mein saare channels par ad badlega
 
+# Default Pehla Ad Setup
 ADS_DATABASE = [
     {
         "id": 1,
@@ -35,29 +36,43 @@ user_states = {}
 client = TelegramClient('ad_scheduler_session', API_ID, API_HASH)
 
 # --- AUTOMATIC CHANNEL TRACKING LOGIC ---
-# Jaise hi bot ko kisi channel mein add kiya jayega ya wo pehla message dekhega, wo use track kar lega
+# Jaise hi bot ko kisi channel mein add kiya jaye, ya wahan koi text aaye, ye use track kar lega
+@client.on(events.Raw())
+async def handle_raw_updates(event):
+    try:
+        if hasattr(event, 'updates'):
+            for update in event.updates:
+                if hasattr(update, 'channel_id'):
+                    c_id = int(f"-100{update.channel_id}")
+                    if c_id not in CONNECTED_CHANNELS:
+                        CONNECTED_CHANNELS.add(c_id)
+                        print(f"🟢 [RAW DETECT] Connected to Channel ID: {c_id}")
+    except:
+        pass
+
 @client.on(events.NewMessage())
 async def track_channels(event):
     if event.is_channel:
         channel_id = event.chat_id
         if channel_id not in CONNECTED_CHANNELS:
             CONNECTED_CHANNELS.add(channel_id)
-            print(f"➕ Naya Channel Detect Hua Aur Add Ho Gaya: {channel_id}")
+            print(f"➕ [MSG DETECT] Naya Channel Add Hua: {channel_id}")
 
 # --- AUTO AD POSTING LOGIC (MULTI-CHANNEL) ---
 async def send_smart_ad():
     global current_ad_index
     
     if not ad_loop_active or not ADS_DATABASE or not CONNECTED_CHANNELS:
+        print("⚠️ Ad send nahi ho paya: Ya toh loop off hai, ya database khali hai, ya channels 0 hain.")
         return
 
     try:
-        # 1. Loop ke hisaab se agla ad select karo
+        # Loop ke hisaab se agla ad select karo
         if current_ad_index >= len(ADS_DATABASE):
             current_ad_index = 0
         ad = ADS_DATABASE[current_ad_index]
 
-        # 2. Jitne bhi tracked channels hain, sab par loop chalao
+        # Jitne bhi tracked channels hain, sab par loop chalao
         for channel_id in list(CONNECTED_CHANNELS):
             # Purana ad agar us channel mein hai toh delete karo
             if channel_id in last_ad_messages:
@@ -66,7 +81,7 @@ async def send_smart_ad():
                 except:
                     pass
 
-            # Naya ad post karo us particular channel mein
+            # Naya ad post karo us channel mein
             try:
                 new_msg = await client.send_message(
                     channel_id,
@@ -76,7 +91,7 @@ async def send_smart_ad():
                 )
                 last_ad_messages[channel_id] = new_msg.id
             except Exception as e:
-                print(f"Channel {channel_id} par post nahi ho paya (Admin rights check karein): {e}")
+                print(f"❌ Channel {channel_id} par post nahi ho paya: {e}")
                 
         print(f"🚀 Ad ID {ad['id']} saare channels par successfully post ho gaya!")
         current_ad_index += 1
@@ -85,9 +100,10 @@ async def send_smart_ad():
         print(f"Multi-channel Ad loop error: {e}")
 
 async def ad_scheduler_loop():
-    await asyncio.sleep(10)  # Bot start hone ke 10 sec baad pehla batch chalega
+    await asyncio.sleep(10)  # Bot start hone ke 10 sec baad automatic loop chalu hoga
     while True:
-        await send_smart_ad()
+        if ad_loop_active:
+            await send_smart_ad()
         await asyncio.sleep(AD_INTERVAL)
 
 # --- ADMIN PANEL BUTTONS ---
@@ -123,14 +139,16 @@ async def handle_admin_inputs(event):
 
     elif text == "📢 Connected Channels":
         if not CONNECTED_CHANNELS:
-            await event.reply("❌ Abhi tak koi channel detect nahi hua. Bot ko channel mein add karke ek baar admin banaein.")
+            await event.reply("❌ Abhi tak koi channel detect nahi hua.\n\n**Sahi Tarika:**\n1. Bot ko channel mein add karke Admin banao.\n2. Channel mein apni ID se ek baar `test` likh kar send karo taaki bot active capture kar sake.")
             return
-        await event.reply(f"📢 **Bot abhi total `{len(CONNECTED_CHANNELS)}` channels/groups ko sambhal raha hai!**")
+        await event.reply(f"📢 **Bot abhi total `{len(CONNECTED_CHANNELS)}` channels ko track kar raha hai!**")
         return
 
     elif text == "🟢 Turn ON Loop":
         ad_loop_active = True
-        await event.reply("🟢 **Auto Ad Scheduler ON ho gaya hai saare channels ke liye!**")
+        await event.reply("🟢 **Auto Ad Scheduler ON ho gaya hai! Saare channels par INSTANT ad bheja ja raha hai...**")
+        # ⚡ Instant Force Trigger!
+        await send_smart_ad()
         return
 
     elif text == "🔴 Turn OFF Loop":
@@ -148,7 +166,7 @@ async def handle_admin_inputs(event):
         await event.reply("🔢 **Ad ki ID bhejo jise delete karna hai:**")
         return
 
-    # Interactive flow handlers
+    # Interactive flow handlers for steps
     if user_id in user_states:
         state = user_states[user_id]["step"]
         
@@ -192,7 +210,7 @@ async def handle_admin_inputs(event):
                 if len(ADS_DATABASE) < initial_len:
                     await event.reply(f"🗑️ **Ad ID {ad_id} ko remove kar diya gaya!**")
                 else:
-                    await event.reply("❌ ID nahi mili.")
+                    await event.reply("❌ ID nahi mila.")
             except:
                 await event.reply("⚠️ Sahi numerical ID bhejo:")
 
