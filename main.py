@@ -9,7 +9,7 @@ BOT_TOKEN = '8945309348:AAGx6zub-rpCH22cnNJzOrvwmQrbqp1hiSU'
 # Aapki Admin ID ✅
 ADMIN_ID = 1969067694  
 
-AD_INTERVAL = 3600  # Har 1 ghante mein ad badlega (Testing ke liye 60 kar sakte ho)
+AD_INTERVAL = 3600  # Har 1 ghante mein ad badlega
 
 # Database shuruat mein bilkul khali hai 
 ADS_DATABASE = []
@@ -26,12 +26,14 @@ user_states = {}
 
 client = TelegramClient('ad_scheduler_session', API_ID, API_HASH)
 
-# --- MULTI-CHANNEL AD SENDING LOGIC ---
-async def send_smart_ad():
+# --- MULTI-CHANNEL AD SENDING LOGIC (WITH ERROR BYPASS) ---
+async def send_smart_ad(event_to_reply=None):
     global current_ad_index
     
     if not ad_loop_active or not ADS_DATABASE or not CONNECTED_CHANNELS:
-        print("⚠️ Ad loop skipped: Ya toh list khali hai, ya channels add nahi hain.")
+        msg = "⚠️ Ad loop skipped: Ya toh database khali hai, ya loop pause hai, ya channels add nahi hain."
+        print(msg)
+        if event_to_reply: await event_to_reply.reply(msg)
         return
 
     try:
@@ -47,23 +49,41 @@ async def send_smart_ad():
                 except:
                     pass
 
-            # 2. Naya ad bhejdo direct username par
+            # 2. Naya ad bhejdo direct username par (Safe Image Bypass Logic)
+            new_msg = None
             try:
+                # Pehle image ke sath try karo
                 new_msg = await client.send_message(
                     channel,
                     ad["text"],
                     file=ad["img_url"] if ad["img_url"] != "none" else None,
                     buttons=Button.url(ad["btn_text"], url=ad["btn_url"])
                 )
+            except Exception as img_err:
+                print(f"⚠️ Image load fail, sending text-only: {img_err}")
+                if event_to_reply: await event_to_reply.reply(f"⚠️ Image link mein error tha, isliye sirf text bhej raha hu: {img_err}")
+                
+                # Agar image fail ho, toh bina image ke sirf text aur button bhejdo
+                try:
+                    new_msg = await client.send_message(
+                        channel,
+                        ad["text"],
+                        buttons=Button.url(ad["btn_text"], url=ad["btn_url"])
+                    )
+                except Exception as text_err:
+                    print(f"❌ Pure text post bhi fail: {text_err}")
+                    if event_to_reply: await event_to_reply.reply(f"❌ Channel {channel} par post nahi ho paya: {text_err}")
+
+            if new_msg:
                 last_ad_messages[channel] = new_msg.id
                 print(f"✅ Successfully Posted on {channel}")
-            except Exception as e:
-                print(f"❌ {channel} par post nahi ho paya: {e}")
+                if event_to_reply: await event_to_reply.reply(f"✅ Ad ID {ad['id']} successfully posted on {channel}!")
                 
         current_ad_index += 1
 
     except Exception as e:
         print(f"Global Ad loop error: {e}")
+        if event_to_reply: await event_to_reply.reply(f"❌ Global Error: {e}")
 
 async def ad_scheduler_loop():
     await asyncio.sleep(5)
@@ -125,7 +145,7 @@ async def handle_admin_inputs(event):
                 return
             user_states[user_id]["data"]["btn_url"] = text
             user_states[user_id]["step"] = "w_img"
-            await event.reply("🖼️ **Banner Image URL** bhejo (Ya bina image ke `none` likho):")
+            await event.reply("🖼️ **Banner Image URL** bhejo:\n\n⚠️ **Tip:** Agar image nahi lagani ya test karna hai, toh bas niche `none` likh kar bhej do!")
             return
             
         elif state == "w_img":
@@ -183,7 +203,8 @@ async def handle_admin_inputs(event):
             return
         ad_loop_active = True
         await event.reply("🟢 **Scheduler ON! Saare channels par aapka ad bheja ja raha hai...**")
-        await send_smart_ad()
+        # Pass event to catch live errors on screen
+        await send_smart_ad(event_to_reply=event)
 
     elif text == "🔴 Turn OFF Loop":
         ad_loop_active = False
