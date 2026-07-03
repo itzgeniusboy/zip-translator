@@ -7,9 +7,9 @@ import pyzipper
 from FastTelethonhelper import fast_upload
 
 # ================= CONFIGURATION (from environment / GitHub Secrets) =================
-API_ID = int(os.environ["32569415"])
-API_HASH = os.environ["4209968745cb99d37820d5ba7b4845bd"]
-BOT_TOKEN = os.environ["8918032442:AAF4kZgCz7ZMC8eAfcpr-f1qr4bTjfs_YyI"]
+API_ID = int(os.environ["API_ID"])
+API_HASH = os.environ["API_HASH"]
+BOT_TOKEN = os.environ["BOT_TOKEN"]
 
 MAX_SIZE = 200 * 1024 * 1024  # 200 MB
 WORK_DIR = "zip_jobs"
