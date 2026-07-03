@@ -1,4 +1,5 @@
 import asyncio
+import os
 from telethon import TelegramClient, events, Button
 
 # ================= CONFIGURATION =================
@@ -6,33 +7,38 @@ API_ID = 32569415
 API_HASH = '4209968745cb99d37820d5ba7b4845bd'
 BOT_TOKEN = '8945309348:AAGx6zub-rpCH22cnNJzOrvwmQrbqp1hiSU'
 
-# Aapki Admin ID ✅
 ADMIN_ID = 1969067694  
-
-AD_INTERVAL = 3600  # Har 1 ghante mein ad badlega
-
-# Database shuruat mein bilkul khali hai 
-ADS_DATABASE = []
+AD_INTERVAL = 3600  
 
 # Target Channels List
 CONNECTED_CHANNELS = set()
 
 ad_loop_active = True
-last_ad_messages = {} # {channel: msg_id}
+last_ad_messages = {} 
 current_ad_index = 0
 ad_id_counter = 0
 user_states = {}
+
+# Agar list khali ho, toh default backup ad (GIF) jo pehle se chalega
+ADS_DATABASE = [
+    {
+        "id": 1,
+        "text": "**🔥 FEATURESTIC LEAKS - BGMI BYPASS MAKING 🔥**\n\nReal premium tools, bypasses, and structures directly from the core! ❤️",
+        "btn_text": "⚡ JOIN NOW",
+        "btn_url": "https://t.me/your_channel_link",
+        "img_url": "ad_banner.gif"  # Apni repo mein ad_banner.gif naam ki file daal dena, ye wahan se utha lega!
+    }
+]
 # =================================================
 
 client = TelegramClient('ad_scheduler_session', API_ID, API_HASH)
 
-# --- MULTI-CHANNEL AD SENDING LOGIC (WITH ERROR BYPASS) ---
+# --- SMART MEDIA SENDING LOGIC (SUPPORT GIF/VIDEO/PHOTO/TEXT) ---
 async def send_smart_ad(event_to_reply=None):
     global current_ad_index
     
     if not ad_loop_active or not ADS_DATABASE or not CONNECTED_CHANNELS:
-        msg = "⚠️ Ad loop skipped: Ya toh database khali hai, ya loop pause hai, ya channels add nahi hain."
-        print(msg)
+        msg = "⚠️ Ad loop skipped: Database khali hai, loop pause hai, ya channels add nahi hain."
         if event_to_reply: await event_to_reply.reply(msg)
         return
 
@@ -44,26 +50,28 @@ async def send_smart_ad(event_to_reply=None):
         for channel in list(CONNECTED_CHANNELS):
             # 1. Purana ad delete karo
             if channel in last_ad_messages:
-                try:
-                    await client.delete_messages(channel, last_ad_messages[channel])
-                except:
-                    pass
+                try: await client.delete_messages(channel, last_ad_messages[channel])
+                except: pass
 
-            # 2. Naya ad bhejdo direct username par (Safe Image Bypass Logic)
+            # 2. Check karo media file local repository mein hai ya URL hai
+            media_file = ad["img_url"]
+            if media_file != "none" and not media_file.startswith("http"):
+                if not os.path.exists(media_file):
+                    print(f"⚠️ Local File {media_file} nahi mili, text-only mode automatic triggered.")
+                    media_file = "none"
+
+            # 3. Dynamic Posting
             new_msg = None
             try:
-                # Pehle image ke sath try karo
+                # Local File ya URL ke sath try karo (GIF/Video/Photo sab chalega)
                 new_msg = await client.send_message(
                     channel,
                     ad["text"],
-                    file=ad["img_url"] if ad["img_url"] != "none" else None,
+                    file=media_file if media_file != "none" else None,
                     buttons=Button.url(ad["btn_text"], url=ad["btn_url"])
                 )
-            except Exception as img_err:
-                print(f"⚠️ Image load fail, sending text-only: {img_err}")
-                if event_to_reply: await event_to_reply.reply(f"⚠️ Image link mein error tha, isliye sirf text bhej raha hu: {img_err}")
-                
-                # Agar image fail ho, toh bina image ke sirf text aur button bhejdo
+            except Exception as media_err:
+                print(f"⚠️ Media crash, bypass to text-only: {media_err}")
                 try:
                     new_msg = await client.send_message(
                         channel,
@@ -71,14 +79,13 @@ async def send_smart_ad(event_to_reply=None):
                         buttons=Button.url(ad["btn_text"], url=ad["btn_url"])
                     )
                 except Exception as text_err:
-                    print(f"❌ Pure text post bhi fail: {text_err}")
-                    if event_to_reply: await event_to_reply.reply(f"❌ Channel {channel} par post nahi ho paya: {text_err}")
+                    print(f"❌ Pure text fail: {text_err}")
 
             if new_msg:
                 last_ad_messages[channel] = new_msg.id
                 print(f"✅ Successfully Posted on {channel}")
-                if event_to_reply: await event_to_reply.reply(f"✅ Ad ID {ad['id']} successfully posted on {channel}!")
                 
+        if event_to_reply: await event_to_reply.reply(f"🚀 Ad successfully updated on all connected platforms!")
         current_ad_index += 1
 
     except Exception as e:
@@ -103,7 +110,7 @@ async def admin_panel(event):
         [Button.text("📢 Add Channel Username"), Button.text("📢 Connected Channels")],
         [Button.text("🟢 Turn ON Loop"), Button.text("🔴 Turn OFF Loop")]
     ]
-    await event.reply("🕹️ **Ad Management Control Panel!**\nNiche diye gaye buttons se control karein:", buttons=admin_buttons)
+    await event.reply("🕹️ **Ad Management Control Panel!**", buttons=admin_buttons)
 
 # --- INTERACTIVE USER INPUTS ---
 @client.on(events.NewMessage())
@@ -114,7 +121,6 @@ async def handle_admin_inputs(event):
     text = event.text.strip()
     user_id = event.sender_id
 
-    # 1. INTERACTIVE CONVERSATION FLOW (Steps tracking)
     if user_id in user_states:
         state = user_states[user_id]["step"]
         
@@ -130,7 +136,7 @@ async def handle_admin_inputs(event):
         elif state == "w_text":
             user_states[user_id]["data"]["text"] = text
             user_states[user_id]["step"] = "w_btn_text"
-            await event.reply("🔘 **Button Name** bhejo (e.g. `🌐 JOIN NOW`):")
+            await event.reply("🔘 **Button Name** bhejo (e.g. `⚡ JOIN NOW`):")
             return
             
         elif state == "w_btn_text":
@@ -141,11 +147,11 @@ async def handle_admin_inputs(event):
             
         elif state == "w_btn_url":
             if not text.startswith("http"):
-                await event.reply("❌ Sahi URL bhejo (`https://...`):")
+                await event.reply("❌ Sahi URL bhejo:")
                 return
             user_states[user_id]["data"]["btn_url"] = text
             user_states[user_id]["step"] = "w_img"
-            await event.reply("🖼️ **Banner Image URL** bhejo:\n\n⚠️ **Tip:** Agar image nahi lagani ya test karna hai, toh bas niche `none` likh kar bhej do!")
+            await event.reply("🖼️ **GIF ya Video ka naam ya link bhejo:**\n\n💡 **Pro-Tip:** Agar repo mein upload ki hai, toh file ka naam dalo (e.g., `banner.gif`). Agar media nahi chahiye, toh `none` likho.")
             return
             
         elif state == "w_img":
@@ -161,7 +167,7 @@ async def handle_admin_inputs(event):
             })
             current_ad_index = len(ADS_DATABASE) - 1
             del user_states[user_id]
-            await event.reply(f"✅ **Aapka naya Ad safely save ho gaya! Ad ID:** `{ad_id_counter}`\nAb aap loop chalu kar sakte hain.")
+            await event.reply(f"✅ **Aapka naya Media Ad save ho gaya! Ad ID:** `{ad_id_counter}`")
             return
 
         elif state == "w_del":
@@ -170,24 +176,23 @@ async def handle_admin_inputs(event):
                 ADS_DATABASE = [ad for ad in ADS_DATABASE if ad["id"] != ad_id]
                 del user_states[user_id]
                 current_ad_index = 0
-                await event.reply(f"🗑️ Ad ID {ad_id} successfully deleted!")
+                await event.reply(f"🗑️ Ad ID {ad_id} deleted!")
             except:
-                await event.reply("⚠️ Sahi numerical ID bhejo:")
+                await event.reply("⚠️ Sahi ID bhejo:")
             return
 
-    # 2. MAIN KEYBOARD BUTTON CLICKS MATCHING
     if text == "📋 List Ads":
         if not ADS_DATABASE:
-            await event.reply("📁 Koi bhi ad saved nahi hai abhi.")
+            await event.reply("📁 List empty hai.")
             return
         res = "📂 **Saved Ads:**\n\n"
         for ad in ADS_DATABASE:
-            res += f"🆔 `Ad ID {ad['id']}`\n📝 Text: {ad['text'][:40]}...\n\n"
+            res += f"🆔 `Ad ID {ad['id']}`\n📝 Text: {ad['text'][:30]}...\n🖼️ Media: `{ad['img_url']}`\n\n"
         await event.reply(res)
 
     elif text == "📢 Connected Channels":
         if not CONNECTED_CHANNELS:
-            await event.reply("❌ Koi bhi channel list mein add nahi hai.\n`📢 Add Channel Username` par click karke add karein.")
+            await event.reply("❌ Channels list khali hai.")
             return
         res = "📢 **Target Channels List:**\n\n"
         for ch in CONNECTED_CHANNELS:
@@ -195,20 +200,15 @@ async def handle_admin_inputs(event):
         await event.reply(res)
 
     elif text == "🟢 Turn ON Loop":
-        if not ADS_DATABASE:
-            await event.reply("⚠️ Pehle `➕ Add Ad` par click karke kam se kam ek ad toh banao!")
-            return
-        if not CONNECTED_CHANNELS:
-            await event.reply("⚠️ Pehle `📢 Add Channel Username` par click karke channel username add karo!")
+        if not ADS_DATABASE or not CONNECTED_CHANNELS:
+            await event.reply("⚠️ Ad ya Channel check karein, data missing hai!")
             return
         ad_loop_active = True
-        await event.reply("🟢 **Scheduler ON! Saare channels par aapka ad bheja ja raha hai...**")
-        # Pass event to catch live errors on screen
         await send_smart_ad(event_to_reply=event)
 
     elif text == "🔴 Turn OFF Loop":
         ad_loop_active = False
-        await event.reply("🔴 **Scheduler PAUSE ho gaya hai!**")
+        await event.reply("🔴 **Scheduler PAUSE!**")
 
     elif text == "➕ Add Ad":
         user_states[user_id] = {"step": "w_text", "data": {}}
@@ -220,12 +220,12 @@ async def handle_admin_inputs(event):
 
     elif text == "📢 Add Channel Username":
         user_states[user_id] = {"step": "w_chan"}
-        await event.reply("📣 **Apne channel ka Username bhejo (with @):**\nExample: `@Cockroach_Janta_Party`")
+        await event.reply("📣 **Channel Username (with @):**")
 
 # --- MAIN START ---
 async def main():
     await client.start(bot_token=BOT_TOKEN)
-    print("Clean Username-Based Ad Bot is running 24x7!")
+    print("Premium Media Ad Bot is running 24x7!")
     client.loop.create_task(ad_scheduler_loop())
     await client.run_until_disconnected()
 
