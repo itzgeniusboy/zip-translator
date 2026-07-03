@@ -4,11 +4,12 @@ import time
 import zipfile
 from telethon import TelegramClient, events
 import pyzipper
+from FastTelethonhelper import fast_upload
 
-# ================= CONFIGURATION =================
-API_ID = 32569415
-API_HASH = '4209968745cb99d37820d5ba7b4845bd'
-BOT_TOKEN = '8918032442:AAF4kZgCz7ZMC8eAfcpr-f1qr4bTjfs_YyI'
+# ================= CONFIGURATION (from environment / GitHub Secrets) =================
+API_ID = int(os.environ["API_ID"])
+API_HASH = os.environ["API_HASH"]
+BOT_TOKEN = os.environ["BOT_TOKEN"]
 
 MAX_SIZE = 200 * 1024 * 1024  # 200 MB
 WORK_DIR = "zip_jobs"
@@ -50,7 +51,6 @@ class ProgressTracker:
     async def callback(self, current, total):
         total = self.total_override or total
         now = time.time()
-        # Throttle edits to avoid Telegram flood limits, but always show 100%
         if now - self.last_edit < 2 and current < total:
             return
         self.last_edit = now
@@ -94,6 +94,7 @@ async def unlock_zip(in_path, out_path, password, status_msg):
     tracker = ProgressTracker(status_msg, "🔓 Removing password", total_override=total_bytes)
     processed = 0
 
+    out = None
     try:
         out = zipfile.ZipFile(out_path, 'w', zipfile.ZIP_DEFLATED)
         for info in infos:
@@ -112,7 +113,8 @@ async def unlock_zip(in_path, out_path, password, status_msg):
         zf.close()
         await tracker.callback(total_bytes, total_bytes)
     except Exception:
-        out.close() if 'out' in dir() else None
+        if out:
+            out.close()
         cleanup(out_path)
         raise
 
@@ -188,13 +190,32 @@ async def handle_message(event):
             user_states.pop(uid, None)
             return
 
+        # ---- Step 3: fast, parallel upload with live progress ----
         upload_status = await event.reply("📤 Starting upload...")
-        upload_tracker = ProgressTracker(upload_status, "📤 Uploading")
+        upload_start = time.time()
+
+        def progress_str(done, total):
+            pct = (done / total * 100) if total else 0
+            elapsed = max(time.time() - upload_start, 0.01)
+            speed = done / elapsed
+            eta = (total - done) / speed if speed > 0 else 0
+            bar_len = 20
+            filled = int(bar_len * pct / 100)
+            bar = "█" * filled + "░" * (bar_len - filled)
+            return (f"📤 Uploading\n[{bar}] {pct:.1f}%\n"
+                    f"{human(done)} / {human(total)}\n"
+                    f"⚡ {human(speed)}/s · ⏳ ETA {int(eta)}s")
+
         try:
+            file_obj = await fast_upload(
+                client, out_path,
+                reply=upload_status,
+                name=os.path.basename(out_path),
+                progress_bar_function=progress_str,
+            )
             await client.send_file(
-                event.chat_id, out_path,
+                event.chat_id, file_obj,
                 caption="✅ **Password removed!** Here's your unlocked zip.",
-                progress_callback=upload_tracker.callback,
                 force_document=True,
             )
         except Exception as e:
