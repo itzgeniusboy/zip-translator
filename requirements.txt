@@ -1,2 +1,4 @@
 telethon
 pyzipper
+cryptg
+FastTelethonhelper
