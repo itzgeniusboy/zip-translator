@@ -20,7 +20,8 @@ jobs:
 
     - name: Deploy to Koyeb
       env:
-        KOYEB_TOKEN: ${{ secrets.KOYEB_TOKEN }}  # GitHub Secrets se token uthayega
+        KOYEB_TOKEN: ${{ secrets.KOYEB_TOKEN }}
       run: |
-        # Bina login kiye direct --token flag use karenge har command mein
-        koyeb service redeploy my-translator-bot-service --token "$KOYEB_TOKEN" || koyeb app init my-translator-bot --git github.com/${{ github.repository }} --branch main --type git --ports 80:http --routes /:80 --token "$KOYEB_TOKEN"
+        # Sahi format: pehle check karega redeploy, fail hua toh app setup karega
+        koyeb service redeploy my-translator-bot-service --token "$KOYEB_TOKEN" || \
+        koyeb app init my-translator-bot --git "github.com/${{ github.repository }}/main" --type git --ports 80:http --routes /:80 --token "$KOYEB_TOKEN"
