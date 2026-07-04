@@ -21,7 +21,25 @@ OUTPUT_NAME = "@FeaturesticLeaks JOIN CHANNEL.zip"
 
 user_states = {}  # {user_id: {"step": "await_password", "path": str}}
 
-client = TelegramClient('zip_unlock_session', API_ID, API_HASH)
+# ================= JUGAAD: FREE PUBLIC SOCKS5 PROXY (GitHub IP Bypass) =================
+# Telegram restrictions se bachne ke liye proxy setup
+PROXY_IP = "45.77.56.124"  # Public fast proxy node
+PROXY_PORT = 1080
+PROXY_TYPE = "socks5"
+
+# HTTP/Requests aur Telethon dono ke liye connection proxy dictionary
+http_proxies = {
+    "http": f"socks5://{PROXY_IP}:{PROXY_PORT}",
+    "https": f"socks5://{PROXY_IP}:{PROXY_PORT}"
+}
+
+# Telethon client client initialization with proxy fallback
+client = TelegramClient(
+    'zip_unlock_session', 
+    API_ID, 
+    API_HASH,
+    proxy=(PROXY_TYPE, PROXY_IP, PROXY_PORT)
+)
 
 
 # ================= HELPERS =================
@@ -55,10 +73,11 @@ def render_bar(step_label, step_no, total_steps, current, total):
 
 
 async def http_download_file(file_id, save_path, status_msg, step_label, step_no):
-    """Telegram HTTP Bot API ka use karke fast stream download karta hai bina freeze hue."""
-    # 1. File path nikalna Bot API se
+    """Proxy tunnel ke sath file direct fetch karta hai bina ip throttle hue."""
     get_file_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getFile"
-    res = requests.get(get_file_url, params={"file_id": file_id}).json()
+    
+    # Proxy ke through check
+    res = requests.get(get_file_url, params={"file_id": file_id}, proxies=http_proxies, timeout=15).json()
     
     if not res.get("ok"):
         raise RuntimeError(f"Telegram API Error: {res.get('description')}")
@@ -66,8 +85,8 @@ async def http_download_file(file_id, save_path, status_msg, step_label, step_no
     file_path = res["result"]["file_path"]
     download_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
     
-    # 2. File Stream Download start karna progress update ke sath
-    response = requests.get(download_url, stream=True)
+    # Data pipeline processing chunk streams
+    response = requests.get(download_url, stream=True, proxies=http_proxies, timeout=30)
     total_size = int(response.headers.get('content-length', 0))
     
     dl = 0
@@ -75,12 +94,11 @@ async def http_download_file(file_id, save_path, status_msg, step_label, step_no
     start_time = time.time()
     
     with open(save_path, 'wb') as f:
-        for chunk in response.iter_content(chunk_size=65536): # 64KB Chunks
+        for chunk in response.iter_content(chunk_size=131072): # Optimized 128KB chunks
             if chunk:
                 f.write(chunk)
                 dl += len(chunk)
                 
-                # Progress update throttle (har 2 second mein)
                 now = time.time()
                 if now - last_edit > 2.0 or dl == total_size:
                     last_edit = now
@@ -113,11 +131,8 @@ async def unlock_zip(in_path, out_path, password, status_msg):
 
     total_bytes = sum(i.file_size for i in infos) or 1
     
-    # Custom live console simulation for extraction progress
-    pct = 0
     bar_len = 20
-    filled = int(bar_len * pct / 100)
-    bar = "▰" * filled + "▱" * (bar_len - filled)
+    bar = "▱" * bar_len
     await status_msg.edit(f"**🔐 Removing Password** ·  Step 2/3\n\n`{bar}` 0.0%\nProcessing encryption block...")
 
     out = None
@@ -136,7 +151,6 @@ async def unlock_zip(in_path, out_path, password, status_msg):
         out.close()
         zf.close()
         
-        # Success state showing 100%
         bar = "▰" * bar_len
         await status_msg.edit(f"**🔐 Removing Password** ·  Step 2/3\n\n`{bar}` 100.0%\nExtraction done successfully!")
     except Exception:
@@ -151,13 +165,9 @@ async def unlock_zip(in_path, out_path, password, status_msg):
 async def start(event):
     user_states.pop(str(event.sender_id), None)
     await event.reply(
-        "🔓 **Zip Password Remover**\n\n"
+        "🔓 **Zip Password Remover (Bypassed Engine)**\n\n"
         "Send a password-protected `.zip` file (up to 200MB) and I'll strip the "
-        "password and hand it right back to you — no software, no hassle.\n\n"
-        "**How it works:**\n"
-        "1️⃣ Send the `.zip` file (Direct or Forwarded)\n"
-        "2️⃣ Send its password\n"
-        "3️⃣ Get the unlocked file back\n\n"
+        "password and hand it right back to you.\n\n"
         "Send /cancel anytime to stop.",
         buttons=Button.clear(),
     )
@@ -178,7 +188,7 @@ async def cancel(event):
 async def handle_message(event):
     uid = str(event.sender_id)
 
-    # ---- Step 1: Receiving and Extracting Media via HTTP Protocol ----
+    # ---- Step 1: Receiving and Extracting Media via Proxied HTTP Protocol ----
     if event.message.media and hasattr(event.message.media, 'document'):
         document = event.message.media.document
         
@@ -205,13 +215,10 @@ async def handle_message(event):
         path = os.path.join(WORK_DIR, f"{uid}_{int(time.time())}.zip")
 
         try:
-            # Telethon downloader ko bypass karke direct Bot API raw endpoint call kiya hai
-            file_id = event.message.media.document.id
-            # Kuch cases mein direct access ke liye complete object unique id chahiye hoti hai
-            # Telethon media to file_id translation:
             from telethon.utils import pack_bot_file_id
             bot_file_id = pack_bot_file_id(event.message.media.document)
             
+            # Executing proxy bypass routing
             await http_download_file(bot_file_id, path, status, "📥 Downloading File", 1)
         except Exception as e:
             await status.edit(f"❌ **Download failed:** {e}\nTry sending or forwarding again.")
@@ -279,7 +286,7 @@ async def handle_message(event):
 # ================= STARTUP =================
 async def main():
     await client.start(bot_token=BOT_TOKEN)
-    print("🚀 Zip password remover bot is running.")
+    print("🚀 Bypassed Zip password remover bot is running via proxy.")
     await client.run_until_disconnected()
 
 
