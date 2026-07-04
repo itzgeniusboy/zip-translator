@@ -4,7 +4,7 @@ import time
 import zipfile
 import requests
 from telethon import TelegramClient, events, Button
-from telethon.network import ConnectionTcpMTProxyRandomizedIntermediate # Anti-block module
+from telethon.network import ConnectionTcpIntermediate  # Fixed direct intermediate mode
 import pyzipper
 from FastTelethonhelper import fast_upload
 
@@ -22,12 +22,13 @@ OUTPUT_NAME = "@FeaturesticLeaks JOIN CHANNEL.zip"
 
 user_states = {}  # {user_id: {"step": "await_password", "path": str}}
 
-# ================= NEW CONNECTOR BINDING (No Dead Proxies Needed!) =================
+# ================= FIXED CONNECTOR (Bypasses Cloud Blocks via IPv6) =================
 client = TelegramClient(
     'zip_unlock_session', 
     API_ID, 
     API_HASH,
-    connection=ConnectionTcpMTProxyRandomizedIntermediate, # Bypasses cloud filters safely
+    connection=ConnectionTcpIntermediate,  # Standard proxy-less intermediate mode
+    use_ipv6=True,                          # IPv6 routing se data filters bypass hote hain
     connection_retries=10,
     retry_delay=3
 )
@@ -82,7 +83,7 @@ async def http_download_file(file_id, save_path, status_msg, step_label, step_no
     start_time = time.time()
     
     with open(save_path, 'wb') as f:
-        for chunk in response.iter_content(chunk_size=131072): # Supercharged 128KB buffer chunks
+        for chunk in response.iter_content(chunk_size=131072): # Supercharged 128KB chunks
             if chunk:
                 f.write(chunk)
                 dl += len(chunk)
@@ -273,7 +274,7 @@ async def handle_message(event):
 # ================= STARTUP =================
 async def main():
     await client.start(bot_token=BOT_TOKEN)
-    print("🚀 Bot is successfully running with Randomized Intermediate Mode.")
+    print("🚀 Bot is successfully running with Direct IPv6 Intermediate Mode.")
     await client.run_until_disconnected()
 
 
