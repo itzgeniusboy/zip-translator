@@ -4,6 +4,7 @@ import time
 import zipfile
 import requests
 from telethon import TelegramClient, events, Button
+from telethon.network import ConnectionTcpMTProxyRandomizedIntermediate # Anti-block module
 import pyzipper
 from FastTelethonhelper import fast_upload
 
@@ -21,24 +22,14 @@ OUTPUT_NAME = "@FeaturesticLeaks JOIN CHANNEL.zip"
 
 user_states = {}  # {user_id: {"step": "await_password", "path": str}}
 
-# ================= JUGAAD: FREE PUBLIC SOCKS5 PROXY (GitHub IP Bypass) =================
-# Telegram restrictions se bachne ke liye proxy setup
-PROXY_IP = "45.77.56.124"  # Public fast proxy node
-PROXY_PORT = 1080
-PROXY_TYPE = "socks5"
-
-# HTTP/Requests aur Telethon dono ke liye connection proxy dictionary
-http_proxies = {
-    "http": f"socks5://{PROXY_IP}:{PROXY_PORT}",
-    "https": f"socks5://{PROXY_IP}:{PROXY_PORT}"
-}
-
-# Telethon client client initialization with proxy fallback
+# ================= NEW CONNECTOR BINDING (No Dead Proxies Needed!) =================
 client = TelegramClient(
     'zip_unlock_session', 
     API_ID, 
     API_HASH,
-    proxy=(PROXY_TYPE, PROXY_IP, PROXY_PORT)
+    connection=ConnectionTcpMTProxyRandomizedIntermediate, # Bypasses cloud filters safely
+    connection_retries=10,
+    retry_delay=3
 )
 
 
@@ -73,20 +64,17 @@ def render_bar(step_label, step_no, total_steps, current, total):
 
 
 async def http_download_file(file_id, save_path, status_msg, step_label, step_no):
-    """Proxy tunnel ke sath file direct fetch karta hai bina ip throttle hue."""
+    """Bypasses default Telethon transport pipelines using direct HTTP streams."""
     get_file_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getFile"
     
-    # Proxy ke through check
-    res = requests.get(get_file_url, params={"file_id": file_id}, proxies=http_proxies, timeout=15).json()
-    
+    res = requests.get(get_file_url, params={"file_id": file_id}, timeout=20).json()
     if not res.get("ok"):
         raise RuntimeError(f"Telegram API Error: {res.get('description')}")
         
     file_path = res["result"]["file_path"]
     download_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
     
-    # Data pipeline processing chunk streams
-    response = requests.get(download_url, stream=True, proxies=http_proxies, timeout=30)
+    response = requests.get(download_url, stream=True, timeout=30)
     total_size = int(response.headers.get('content-length', 0))
     
     dl = 0
@@ -94,7 +82,7 @@ async def http_download_file(file_id, save_path, status_msg, step_label, step_no
     start_time = time.time()
     
     with open(save_path, 'wb') as f:
-        for chunk in response.iter_content(chunk_size=131072): # Optimized 128KB chunks
+        for chunk in response.iter_content(chunk_size=131072): # Supercharged 128KB buffer chunks
             if chunk:
                 f.write(chunk)
                 dl += len(chunk)
@@ -165,7 +153,7 @@ async def unlock_zip(in_path, out_path, password, status_msg):
 async def start(event):
     user_states.pop(str(event.sender_id), None)
     await event.reply(
-        "🔓 **Zip Password Remover (Bypassed Engine)**\n\n"
+        "🔓 **Zip Password Remover (Optimized Engine)**\n\n"
         "Send a password-protected `.zip` file (up to 200MB) and I'll strip the "
         "password and hand it right back to you.\n\n"
         "Send /cancel anytime to stop.",
@@ -188,7 +176,7 @@ async def cancel(event):
 async def handle_message(event):
     uid = str(event.sender_id)
 
-    # ---- Step 1: Receiving and Extracting Media via Proxied HTTP Protocol ----
+    # ---- Step 1: Receiving Media ----
     if event.message.media and hasattr(event.message.media, 'document'):
         document = event.message.media.document
         
@@ -218,7 +206,6 @@ async def handle_message(event):
             from telethon.utils import pack_bot_file_id
             bot_file_id = pack_bot_file_id(event.message.media.document)
             
-            # Executing proxy bypass routing
             await http_download_file(bot_file_id, path, status, "📥 Downloading File", 1)
         except Exception as e:
             await status.edit(f"❌ **Download failed:** {e}\nTry sending or forwarding again.")
@@ -232,7 +219,7 @@ async def handle_message(event):
         )
         return
 
-    # ---- Step 2: Receiving the password ----
+    # ---- Step 2: Receiving Password ----
     text = (event.raw_text or "").strip()
     if uid in user_states and user_states[uid]["step"] == "await_password" and text:
         in_path = user_states[uid]["path"]
@@ -250,7 +237,7 @@ async def handle_message(event):
             user_states.pop(uid, None)
             return
 
-        # ---- Step 3: Fast, parallel upload with live progress ----
+        # ---- Step 3: Parallel Upload ----
         upload_status = await event.reply(render_bar("📤 Uploading Unlocked File", 3, 3, 0, 1))
         upload_start = time.time()
 
@@ -286,7 +273,7 @@ async def handle_message(event):
 # ================= STARTUP =================
 async def main():
     await client.start(bot_token=BOT_TOKEN)
-    print("🚀 Bypassed Zip password remover bot is running via proxy.")
+    print("🚀 Bot is successfully running with Randomized Intermediate Mode.")
     await client.run_until_disconnected()
 
 
