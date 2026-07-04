@@ -4,11 +4,10 @@ import time
 import zipfile
 import requests
 from telethon import TelegramClient, events, Button
-from telethon.network import ConnectionTcpFull  # Standard safe connection model
 import pyzipper
 from FastTelethonhelper import fast_upload
 
-# ================= CONFIGURATION (from environment / GitHub Actions) =================
+# ================= CONFIGURATION (from environment) =================
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
@@ -22,15 +21,8 @@ OUTPUT_NAME = "@FeaturesticLeaks JOIN CHANNEL.zip"
 
 user_states = {}  # {user_id: {"step": "await_password", "path": str}}
 
-# ================= FIXED TRANSPORT BINDING =================
-# IPv6 completely disabled to bypass "Network is unreachable" error on GitHub Runners
-client = TelegramClient(
-    'zip_unlock_session', 
-    API_ID, 
-    API_HASH,
-    connection=ConnectionTcpFull,
-    use_ipv6=False
-)
+# Standard client creation - Cloud hosts strictly support this out-of-the-box
+client = TelegramClient('zip_unlock_session', API_ID, API_HASH)
 
 
 # ================= HELPERS =================
@@ -64,9 +56,7 @@ def render_bar(step_label, step_no, total_steps, current, total):
 
 
 async def http_download_file(file_id, save_path, status_msg, step_label, step_no):
-    """Bypasses default Telethon transport pipelines using direct HTTP streams."""
     get_file_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getFile"
-    
     res = requests.get(get_file_url, params={"file_id": file_id}, timeout=20).json()
     if not res.get("ok"):
         raise RuntimeError(f"Telegram API Error: {res.get('description')}")
@@ -153,7 +143,7 @@ async def unlock_zip(in_path, out_path, password, status_msg):
 async def start(event):
     user_states.pop(str(event.sender_id), None)
     await event.reply(
-        "🔓 **Zip Password Remover (Optimized)**\n\n"
+        "🔓 **Zip Password Remover**\n\n"
         "Send a password-protected `.zip` file (up to 200MB) and I'll strip the "
         "password and hand it right back to you.\n\n"
         "Send /cancel anytime to stop.",
@@ -176,7 +166,6 @@ async def cancel(event):
 async def handle_message(event):
     uid = str(event.sender_id)
 
-    # ---- Step 1: Receiving Media ----
     if event.message.media and hasattr(event.message.media, 'document'):
         document = event.message.media.document
         
@@ -205,10 +194,9 @@ async def handle_message(event):
         try:
             from telethon.utils import pack_bot_file_id
             bot_file_id = pack_bot_file_id(event.message.media.document)
-            
             await http_download_file(bot_file_id, path, status, "📥 Downloading File", 1)
         except Exception as e:
-            await status.edit(f"❌ **Download failed:** {e}\nTry sending or forwarding again.")
+            await status.edit(f"❌ **Download failed:** {e}\nTry sending again.")
             cleanup(path)
             return
 
@@ -219,7 +207,6 @@ async def handle_message(event):
         )
         return
 
-    # ---- Step 2: Receiving Password ----
     text = (event.raw_text or "").strip()
     if uid in user_states and user_states[uid]["step"] == "await_password" and text:
         in_path = user_states[uid]["path"]
@@ -237,7 +224,6 @@ async def handle_message(event):
             user_states.pop(uid, None)
             return
 
-        # ---- Step 3: Parallel Upload ----
         upload_status = await event.reply(render_bar("📤 Uploading Unlocked File", 3, 3, 0, 1))
         upload_start = time.time()
 
@@ -270,11 +256,9 @@ async def handle_message(event):
         return
 
 
-# ================= STARTUP =================
 async def main():
-    # Direct standard start function without loop proxy bindings
     await client.start(bot_token=BOT_TOKEN)
-    print("🚀 Bot is successfully running inside GitHub Actions!")
+    print("🚀 Bot is running successfully!")
     await client.run_until_disconnected()
 
 
