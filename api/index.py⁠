@@ -1,0 +1,133 @@
+import os
+import asyncio
+import zipfile
+import requests
+import pyzipper
+from http.server import BaseHTTPRequestHandler
+from telegram import Update, Bot
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+
+BOT_TOKEN = os.environ["BOT_TOKEN"]
+CHANNEL_TAG = "@FeaturesticLeaks"
+OUTPUT_NAME = "@FeaturesticLeaks JOIN CHANNEL.zip"
+MAX_SIZE = 200 * 1024 * 1024  # 200MB
+WORK_DIR = "/tmp/zip_jobs"
+os.makedirs(WORK_DIR, exist_ok=True)
+
+# Global states temporary tracking
+user_states = {}
+
+def cleanup(*paths):
+    for p in paths:
+        try:
+            if p and os.path.exists(p): os.remove(p)
+        except: pass
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_states.pop(str(update.effective_user.id), None)
+    await update.message.reply_text(
+        "🔓 **Zip Password Remover (Vercel Serverless Engine)**\n\n"
+        "Send a password-protected `.zip` file (up to 200MB) and I'll strip it.\n\n"
+        "Send /cancel to stop."
+    )
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = str(update.effective_user.id)
+    state = user_states.pop(uid, None)
+    if state:
+        cleanup(state.get("path"))
+        await update.message.reply_text("❌ **Cancelled.** Temporary files cleared.")
+    else:
+        await update.message.reply_text("ℹ️ Nothing in progress right now.")
+
+async def handle_docs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = str(update.effective_user.id)
+    doc = update.message.document
+    
+    if not doc.file_name.lower().endswith('.zip'):
+        return
+        
+    if doc.file_size > MAX_SIZE:
+        await update.message.reply_text("⚠️ **File too large.** Max limit 200MB.")
+        return
+        
+    status = await update.message.reply_text("📥 **Downloading File... Please wait.**")
+    
+    path = os.path.join(WORK_DIR, f"{uid}_file.zip")
+    
+    try:
+        # Vercel infrastructure direct download stream bypass
+        tg_file = await context.bot.get_file(doc.file_id)
+        await tg_file.download_to_drive(custom_path=path)
+        
+        user_states[uid] = {"step": "await_password", "path": path, "status_id": status.message_id}
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=status.message_id,
+            text="✅ **File received successfully.**\n\n🔑 Please send the **password** for this zip to continue:"
+        )
+    except Exception as e:
+        await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=status.message_id, text=f"❌ Download failed: {str(e)}")
+        cleanup(path)
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = str(update.effective_user.id)
+    text = update.message.text.strip()
+    
+    if uid in user_states and user_states[uid]["step"] == "await_password" and text:
+        state = user_states[uid]
+        in_path = state["path"]
+        status_id = state["status_id"]
+        out_path = os.path.join(WORK_DIR, f"{uid}_unlocked.zip")
+        
+        await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=status_id, text="🔐 **Stripping Password...**")
+        
+        try:
+            # Synchronous zip extraction logic
+            with pyzipper.AESZipFile(in_path) as zf:
+                zf.pwd = text.encode()
+                infos = zf.infolist()
+                with zipfile.ZipFile(out_path, 'w', zipfile.ZIP_DEFLATED) as out:
+                    for info in infos:
+                        out.writestr(info.filename, zf.read(info.filename))
+        except Exception:
+            await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=status_id, text="❌ **Incorrect password.** Send again or /cancel.")
+            cleanup(out_path)
+            return
+            
+        await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=status_id, text="📤 **Uploading Unlocked File...**")
+        
+        try:
+            with open(out_path, 'rb') as f:
+                await context.bot.send_document(
+                    chat_id=update.effective_chat.id,
+                    document=f,
+                    filename=OUTPUT_NAME,
+                    caption=f"✅ **Done! Password removed successfully.**\n\n📢 Join {CHANNEL_TAG}"
+                )
+            await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=status_id)
+        except Exception as e:
+            await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=status_id, text=f"❌ Upload failed: {str(e)}")
+        finally:
+            cleanup(in_path, out_path)
+            user_states.pop(uid, None)
+
+# Serverless Setup for Vercel Webhook Router
+app = Application.builder().token(BOT_TOKEN).build()
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("cancel", cancel))
+app.add_handler(MessageHandler(filters.Document.ALL, handle_docs))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+
+class handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        content_length = int(self.headers['Content-Length'])
+        post_data = self.rfile.read(content_length).decode('utf-8')
+        
+        asyncio.run(app.initialize())
+        update = Update.de_json(data=requests.loads(post_data), bot=app.bot)
+        asyncio.run(app.process_update(update))
+        
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b'OK')
