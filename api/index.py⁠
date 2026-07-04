@@ -1,20 +1,18 @@
 import os
 import asyncio
 import zipfile
-import requests
+import json
 import pyzipper
 from http.server import BaseHTTPRequestHandler
-from telegram import Update, Bot
+from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-BOT_TOKEN = os.environ["BOT_TOKEN"]
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 CHANNEL_TAG = "@FeaturesticLeaks"
 OUTPUT_NAME = "@FeaturesticLeaks JOIN CHANNEL.zip"
-MAX_SIZE = 200 * 1024 * 1024  # 200MB
 WORK_DIR = "/tmp/zip_jobs"
 os.makedirs(WORK_DIR, exist_ok=True)
 
-# Global states temporary tracking
 user_states = {}
 
 def cleanup(*paths):
@@ -26,7 +24,7 @@ def cleanup(*paths):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_states.pop(str(update.effective_user.id), None)
     await update.message.reply_text(
-        "🔓 **Zip Password Remover (Vercel Serverless Engine)**\n\n"
+        "🔓 **Zip Password Remover (Vercel Engine)**\n\n"
         "Send a password-protected `.zip` file (up to 200MB) and I'll strip it.\n\n"
         "Send /cancel to stop."
     )
@@ -47,16 +45,10 @@ async def handle_docs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not doc.file_name.lower().endswith('.zip'):
         return
         
-    if doc.file_size > MAX_SIZE:
-        await update.message.reply_text("⚠️ **File too large.** Max limit 200MB.")
-        return
-        
     status = await update.message.reply_text("📥 **Downloading File... Please wait.**")
-    
     path = os.path.join(WORK_DIR, f"{uid}_file.zip")
     
     try:
-        # Vercel infrastructure direct download stream bypass
         tg_file = await context.bot.get_file(doc.file_id)
         await tg_file.download_to_drive(custom_path=path)
         
@@ -64,7 +56,7 @@ async def handle_docs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=status.message_id,
-            text="✅ **File received successfully.**\n\n🔑 Please send the **password** for this zip to continue:"
+            text="✅ **File received.**\n\n🔑 Please send the **password** for this zip to continue:"
         )
     except Exception as e:
         await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=status.message_id, text=f"❌ Download failed: {str(e)}")
@@ -83,7 +75,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=status_id, text="🔐 **Stripping Password...**")
         
         try:
-            # Synchronous zip extraction logic
             with pyzipper.AESZipFile(in_path) as zf:
                 zf.pwd = text.encode()
                 infos = zf.infolist()
@@ -111,8 +102,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         finally:
             cleanup(in_path, out_path)
             user_states.pop(uid, None)
+        return
 
-# Serverless Setup for Vercel Webhook Router
+# Application pipeline bindings
 app = Application.builder().token(BOT_TOKEN).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("cancel", cancel))
@@ -124,8 +116,11 @@ class handler(BaseHTTPRequestHandler):
         content_length = int(self.headers['Content-Length'])
         post_data = self.rfile.read(content_length).decode('utf-8')
         
+        # Fixed JSON structure parser
+        data = json.loads(post_data)
+        
         asyncio.run(app.initialize())
-        update = Update.de_json(data=requests.loads(post_data), bot=app.bot)
+        update = Update.de_json(data=data, bot=app.bot)
         asyncio.run(app.process_update(update))
         
         self.send_response(200)
