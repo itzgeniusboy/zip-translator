@@ -18,9 +18,6 @@ os.makedirs(WORK_DIR, exist_ok=True)
 CHANNEL_TAG = "@FeaturesticLeaks"
 OUTPUT_NAME = "@FeaturesticLeaks JOIN CHANNEL.zip"
 
-STALL_TIMEOUT = 45     # seconds with zero progress before warning the user
-HARD_TIMEOUT = 240     # seconds before giving up entirely
-
 user_states = {}  # {user_id: {"step": "await_password", "path": str}}
 
 client = TelegramClient('zip_unlock_session', API_ID, API_HASH)
@@ -57,21 +54,17 @@ def render_bar(step_label, step_no, total_steps, current, total):
 
 
 class ProgressTracker:
-    """Reliable, live-updating progress message with percentage, speed, and ETA."""
-
-    def __init__(self, status_msg, step_label, step_no, total_steps=3, total_override=None):
+    def __init__(self, status_msg, step_label, step_no, total_steps=3):
         self.msg = status_msg
         self.step_label = step_label
         self.step_no = step_no
         self.total_steps = total_steps
         self.start = time.time()
         self.last_edit = 0
-        self.total_override = total_override
 
     async def callback(self, current, total):
-        total = self.total_override or total
         now = time.time()
-        if now - self.last_edit < 1.5 and current < total:
+        if now - self.last_edit < 2.0 and current < total:
             return
         self.last_edit = now
 
@@ -89,57 +82,7 @@ class ProgressTracker:
             pass
 
 
-async def download_with_watchdog(event, path, tracker, status_msg,
-                                  stall_timeout=STALL_TIMEOUT, hard_timeout=HARD_TIMEOUT):
-    """Downloads the file while watching for stalls, so the bot never looks silently frozen."""
-    last_progress = {"bytes": 0, "time": time.time()}
-
-    async def wrapped_callback(current, total):
-        last_progress["bytes"] = current
-        last_progress["time"] = time.time()
-        await tracker.callback(current, total)
-
-    download_task = asyncio.create_task(
-        event.download_media(file=path, progress_callback=wrapped_callback)
-    )
-
-    start = time.time()
-    warned = False
-    try:
-        while not download_task.done():
-            await asyncio.sleep(5)
-            idle = time.time() - last_progress["time"]
-            elapsed = time.time() - start
-
-            if elapsed > hard_timeout:
-                download_task.cancel()
-                raise RuntimeError(
-                    "Download timed out — the connection to Telegram's servers is too slow right now. "
-                    "Please try again in a bit, or send a smaller file."
-                )
-
-            if idle > stall_timeout and last_progress["bytes"] == 0 and not warned:
-                warned = True
-                try:
-                    await status_msg.edit(
-                        "🐢 **Network is slow right now.**\n"
-                        "Still trying to connect to Telegram's servers — this can take a moment. "
-                        "Hang tight, or /cancel to stop."
-                    )
-                except Exception:
-                    pass
-
-        return await download_task
-    except asyncio.CancelledError:
-        raise
-    except RuntimeError:
-        raise
-    except Exception as e:
-        raise RuntimeError(str(e))
-
-
 async def unlock_zip(in_path, out_path, password, status_msg):
-    """Reads an encrypted zip and rewrites it without a password, reporting live progress."""
     def open_source():
         zf = pyzipper.AESZipFile(in_path)
         zf.pwd = password.encode()
@@ -153,7 +96,7 @@ async def unlock_zip(in_path, out_path, password, status_msg):
         raise RuntimeError(f"Could not open zip: {e}")
 
     total_bytes = sum(i.file_size for i in infos) or 1
-    tracker = ProgressTracker(status_msg, "🔐 Removing Password", 2, total_override=total_bytes)
+    tracker = ProgressTracker(status_msg, "🔐 Removing Password", 2)
     processed = 0
 
     out = None
@@ -192,7 +135,7 @@ async def start(event):
         "**How it works:**\n"
         "1️⃣ Send the `.zip` file (Direct or Forwarded)\n"
         "2️⃣ Send its password\n"
-        "3️⃣ Get the unlocked file back — live progress shown at every step\n\n"
+        "3️⃣ Get the unlocked file back\n\n"
         "Send /cancel anytime to stop.",
         buttons=Button.clear(),
     )
@@ -213,7 +156,7 @@ async def cancel(event):
 async def handle_message(event):
     uid = str(event.sender_id)
 
-    # ---- Step 1: receiving the zip file (Direct & Forwarded Messages support) ----
+    # ---- Step 1: Receiving and Extracting Media (Direct & Forwarded) ----
     if event.message.media and hasattr(event.message.media, 'document'):
         document = event.message.media.document
         
@@ -225,7 +168,7 @@ async def handle_message(event):
                     break
                     
         if not fname.lower().endswith(".zip"):
-            return  # Not a zip file, ignore or reply
+            return  # Zip nahi hai toh bypass karo
 
         file_size = document.size
         if file_size > MAX_SIZE:
@@ -236,17 +179,15 @@ async def handle_message(event):
             render_bar("📥 Downloading File", 1, 3, 0, file_size or 1),
             buttons=Button.clear(),
         )
+        
         path = os.path.join(WORK_DIR, f"{uid}_{int(time.time())}.zip")
         tracker = ProgressTracker(status, "📥 Downloading File", 1)
 
         try:
-            await download_with_watchdog(event, path, tracker, status)
-        except RuntimeError as e:
-            await status.edit(f"⏱️ **{e}**\n\nSend the file again to retry.")
-            cleanup(path)
-            return
+            # Direct client integration using native client down-stream chunks to avoid silent stalls
+            await client.download_media(event.message, file=path, progress_callback=tracker.callback)
         except Exception as e:
-            await status.edit(f"❌ **Download failed:** {e}")
+            await status.edit(f"❌ **Download failed:** {e}\nTry sending or forwarding again.")
             cleanup(path)
             return
 
@@ -257,7 +198,7 @@ async def handle_message(event):
         )
         return
 
-    # ---- Step 2: receiving the password ----
+    # ---- Step 2: Receiving the password ----
     text = (event.raw_text or "").strip()
     if uid in user_states and user_states[uid]["step"] == "await_password" and text:
         in_path = user_states[uid]["path"]
@@ -275,7 +216,7 @@ async def handle_message(event):
             user_states.pop(uid, None)
             return
 
-        # ---- Step 3: fast, parallel upload with live progress ----
+        # ---- Step 3: Fast, parallel upload with live progress ----
         upload_status = await event.reply(render_bar("📤 Uploading Unlocked File", 3, 3, 0, 1))
         upload_start = time.time()
 
