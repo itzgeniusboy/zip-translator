@@ -2,6 +2,7 @@ import asyncio
 import os
 import time
 import zipfile
+import requests
 from telethon import TelegramClient, events, Button
 import pyzipper
 from FastTelethonhelper import fast_upload
@@ -53,33 +54,48 @@ def render_bar(step_label, step_no, total_steps, current, total):
     )
 
 
-class ProgressTracker:
-    def __init__(self, status_msg, step_label, step_no, total_steps=3):
-        self.msg = status_msg
-        self.step_label = step_label
-        self.step_no = step_no
-        self.total_steps = total_steps
-        self.start = time.time()
-        self.last_edit = 0
-
-    async def callback(self, current, total):
-        now = time.time()
-        if now - self.last_edit < 2.0 and current < total:
-            return
-        self.last_edit = now
-
-        elapsed = max(now - self.start, 0.01)
-        speed = current / elapsed
-        eta = (total - current) / speed if speed > 0 else 0
-
-        text = (
-            render_bar(self.step_label, self.step_no, self.total_steps, current, total)
-            + f"\n⚡ {human(speed)}/s  ·  ⏳ ETA {int(eta)}s"
-        )
-        try:
-            await self.msg.edit(text)
-        except Exception:
-            pass
+async def http_download_file(file_id, save_path, status_msg, step_label, step_no):
+    """Telegram HTTP Bot API ka use karke fast stream download karta hai bina freeze hue."""
+    # 1. File path nikalna Bot API se
+    get_file_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getFile"
+    res = requests.get(get_file_url, params={"file_id": file_id}).json()
+    
+    if not res.get("ok"):
+        raise RuntimeError(f"Telegram API Error: {res.get('description')}")
+        
+    file_path = res["result"]["file_path"]
+    download_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+    
+    # 2. File Stream Download start karna progress update ke sath
+    response = requests.get(download_url, stream=True)
+    total_size = int(response.headers.get('content-length', 0))
+    
+    dl = 0
+    last_edit = 0
+    start_time = time.time()
+    
+    with open(save_path, 'wb') as f:
+        for chunk in response.iter_content(chunk_size=65536): # 64KB Chunks
+            if chunk:
+                f.write(chunk)
+                dl += len(chunk)
+                
+                # Progress update throttle (har 2 second mein)
+                now = time.time()
+                if now - last_edit > 2.0 or dl == total_size:
+                    last_edit = now
+                    elapsed = max(now - start_time, 0.01)
+                    speed = dl / elapsed
+                    eta = (total_size - dl) / speed if speed > 0 else 0
+                    
+                    text = (
+                        render_bar(step_label, step_no, 3, dl, total_size)
+                        + f"\n⚡ {human(speed)}/s  ·  ⏳ ETA {int(eta)}s"
+                    )
+                    try:
+                        await status_msg.edit(text)
+                    except Exception:
+                        pass
 
 
 async def unlock_zip(in_path, out_path, password, status_msg):
@@ -96,8 +112,13 @@ async def unlock_zip(in_path, out_path, password, status_msg):
         raise RuntimeError(f"Could not open zip: {e}")
 
     total_bytes = sum(i.file_size for i in infos) or 1
-    tracker = ProgressTracker(status_msg, "🔐 Removing Password", 2)
-    processed = 0
+    
+    # Custom live console simulation for extraction progress
+    pct = 0
+    bar_len = 20
+    filled = int(bar_len * pct / 100)
+    bar = "▰" * filled + "▱" * (bar_len - filled)
+    await status_msg.edit(f"**🔐 Removing Password** ·  Step 2/3\n\n`{bar}` 0.0%\nProcessing encryption block...")
 
     out = None
     try:
@@ -111,12 +132,13 @@ async def unlock_zip(in_path, out_path, password, status_msg):
                 raise RuntimeError(f"Failed to read '{info.filename}': {e}")
 
             await loop.run_in_executor(None, out.writestr, info.filename, data)
-            processed += info.file_size
-            await tracker.callback(processed, total_bytes)
 
         out.close()
         zf.close()
-        await tracker.callback(total_bytes, total_bytes)
+        
+        # Success state showing 100%
+        bar = "▰" * bar_len
+        await status_msg.edit(f"**🔐 Removing Password** ·  Step 2/3\n\n`{bar}` 100.0%\nExtraction done successfully!")
     except Exception:
         if out:
             out.close()
@@ -156,7 +178,7 @@ async def cancel(event):
 async def handle_message(event):
     uid = str(event.sender_id)
 
-    # ---- Step 1: Receiving and Extracting Media (Direct & Forwarded) ----
+    # ---- Step 1: Receiving and Extracting Media via HTTP Protocol ----
     if event.message.media and hasattr(event.message.media, 'document'):
         document = event.message.media.document
         
@@ -168,7 +190,7 @@ async def handle_message(event):
                     break
                     
         if not fname.lower().endswith(".zip"):
-            return  # Zip nahi hai toh bypass karo
+            return
 
         file_size = document.size
         if file_size > MAX_SIZE:
@@ -181,11 +203,16 @@ async def handle_message(event):
         )
         
         path = os.path.join(WORK_DIR, f"{uid}_{int(time.time())}.zip")
-        tracker = ProgressTracker(status, "📥 Downloading File", 1)
 
         try:
-            # Direct client integration using native client down-stream chunks to avoid silent stalls
-            await client.download_media(event.message, file=path, progress_callback=tracker.callback)
+            # Telethon downloader ko bypass karke direct Bot API raw endpoint call kiya hai
+            file_id = event.message.media.document.id
+            # Kuch cases mein direct access ke liye complete object unique id chahiye hoti hai
+            # Telethon media to file_id translation:
+            from telethon.utils import pack_bot_file_id
+            bot_file_id = pack_bot_file_id(event.message.media.document)
+            
+            await http_download_file(bot_file_id, path, status, "📥 Downloading File", 1)
         except Exception as e:
             await status.edit(f"❌ **Download failed:** {e}\nTry sending or forwarding again.")
             cleanup(path)
