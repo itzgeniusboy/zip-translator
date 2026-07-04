@@ -4,7 +4,7 @@ import time
 import zipfile
 import requests
 from telethon import TelegramClient, events, Button
-from telethon.network import ConnectionTcpFull  # Safe data connection model
+from telethon.network import ConnectionTcpFull  # Standard safe connection model
 import pyzipper
 from FastTelethonhelper import fast_upload
 
@@ -22,19 +22,15 @@ OUTPUT_NAME = "@FeaturesticLeaks JOIN CHANNEL.zip"
 
 user_states = {}  # {user_id: {"step": "await_password", "path": str}}
 
-# ================= ULTIMATE FIREWALL BYPASS: PORT 443 TCP BINDING =================
-# IPv6 disable karke standard connection mode par port 443 use kiya hai
+# ================= FIXED TRANSPORT BINDING =================
+# IPv6 completely disabled to bypass "Network is unreachable" error on GitHub Runners
 client = TelegramClient(
     'zip_unlock_session', 
     API_ID, 
     API_HASH,
     connection=ConnectionTcpFull,
-    use_ipv6=False,
-    local_addr=None
+    use_ipv6=False
 )
-
-# Custom force binding for port 443 to override blocked cloud paths
-client.run_in_loop(client.set_proxy(None)) 
 
 
 # ================= HELPERS =================
@@ -157,7 +153,7 @@ async def unlock_zip(in_path, out_path, password, status_msg):
 async def start(event):
     user_states.pop(str(event.sender_id), None)
     await event.reply(
-        "🔓 **Zip Password Remover (Firewall Bypassed Engine)**\n\n"
+        "🔓 **Zip Password Remover (Optimized)**\n\n"
         "Send a password-protected `.zip` file (up to 200MB) and I'll strip the "
         "password and hand it right back to you.\n\n"
         "Send /cancel anytime to stop.",
@@ -276,11 +272,9 @@ async def handle_message(event):
 
 # ================= STARTUP =================
 async def main():
-    # Force default TCP handshake over standard secure web port 443
-    await client.connect()
-    if not await client.is_user_authorized():
-        await client.start(bot_token=BOT_TOKEN)
-    print("🚀 Bot is successfully running over secure port 443!")
+    # Direct standard start function without loop proxy bindings
+    await client.start(bot_token=BOT_TOKEN)
+    print("🚀 Bot is successfully running inside GitHub Actions!")
     await client.run_until_disconnected()
 
 
