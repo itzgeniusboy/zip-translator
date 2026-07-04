@@ -1,15 +1,16 @@
 import os
-import json
 import zipfile
 import requests
 import pyzipper
-from http.server import BaseHTTPRequestHandler
+from fastapi import FastAPI, Request, BackgroundTasks
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 CHANNEL_TAG = "@FeaturesticLeaks"
 OUTPUT_NAME = "@FeaturesticLeaks JOIN CHANNEL.zip"
 WORK_DIR = "/tmp"
+
+app = FastAPI()
 
 def cleanup(*paths):
     for p in paths:
@@ -36,7 +37,7 @@ def send_document(chat_id, file_path, caption):
         data = {'chat_id': chat_id, 'caption': caption}
         return requests.post(url, data=data, files=files).json()
 
-def process_bot_logic(update):
+def process_bot_logic(update: dict):
     if "message" not in update:
         return
     
@@ -47,7 +48,7 @@ def process_bot_logic(update):
     if "text" in message:
         text = message["text"].strip()
         if text == "/start":
-            send_message(chat_id, "🔓 **Zip Password Remover (Stateless Cloud Engine)**\n\nSend me any password-protected `.zip` file (up to 200MB) directly or forward it here!")
+            send_message(chat_id, "🔓 **Zip Password Remover (FastAPI Engine)**\n\nSend me any password-protected `.zip` file (up to 200MB) directly or forward it here!")
             return
         elif text == "/cancel":
             send_message(chat_id, "❌ Actions cleared. You can send a new zip file anytime.")
@@ -60,11 +61,10 @@ def process_bot_logic(update):
             return
             
         if doc.get("file_size", 0) > 200 * 1024 * 1024:
-            send_message(chat_id, "⚠️ **File too large.** Vercel server limits max 200MB zip packets.")
+            send_message(chat_id, "⚠️ **File too large.** Max limit 200MB.")
             return
             
-        # Bind file details inside standard Telegram Reply Structure to ensure zero stateless drop
-        # Hum ForceReply string text mein metadata aur file_id bind kar rahe hain
+        # Stateless tracking layout via ForceReply text inject
         reply_markup = {
             "force_reply": True,
             "input_field_placeholder": "Enter zip password...",
@@ -74,20 +74,18 @@ def process_bot_logic(update):
         send_message(
             chat_id, 
             f"📥 **Zip Received!**\n\n`File ID:`\n`{doc['file_id']}`\n\n⚠️ **CRITICAL:** Reply to this exact message with the password to unlock it! 👇",
-            reply_markup=json.dumps(reply_markup)
+            reply_markup=reply_markup
         )
         return
 
-    # 3. Handle Password Verification via Reply Message Parsing
+    # 3. Handle Password Verification via Reply Parsing
     if "text" in message and "reply_to_message" in message:
         reply_to = message["reply_to_message"]
         reply_text = reply_to.get("text", "")
         
-        # Check if this message is a reply to our validation signature
         if "Zip Received!" in reply_text and "`File ID:`" in reply_text:
             passwd = message["text"].strip()
             
-            # Extract bound file_id safely out of the string template text
             try:
                 lines = reply_text.split("\n")
                 file_id = lines[3].replace("`", "").strip()
@@ -102,9 +100,8 @@ def process_bot_logic(update):
             out_path = os.path.join(WORK_DIR, f"{chat_id}_out.zip")
             
             try:
-                if msg_id: edit_message(chat_id, msg_id, "📥 **Downloading package block from cloud pipelines...**")
+                if msg_id: edit_message(chat_id, msg_id, "📥 **Downloading package block...**")
                 
-                # Dynamic fetch from secure CDN structures
                 file_info = requests.get(f"{TELEGRAM_API}/getFile", params={"file_id": file_id}).json()
                 file_path = file_info["result"]["file_path"]
                 
@@ -113,9 +110,8 @@ def process_bot_logic(update):
                     for chunk in dl_res.iter_content(chunk_size=131072):
                         if chunk: f.write(chunk)
                 
-                if msg_id: edit_message(chat_id, msg_id, "🔐 **Stripping encryption layer headers...**")
+                if msg_id: edit_message(chat_id, msg_id, "🔐 **Stripping encryption layer...**")
                 
-                # Decryption pipelines implementation
                 with pyzipper.AESZipFile(in_path) as zf:
                     zf.pwd = passwd.encode()
                     infos = zf.infolist()
@@ -123,34 +119,28 @@ def process_bot_logic(update):
                         for info in infos:
                             out.writestr(info.filename, zf.read(info.filename))
                             
-                if msg_id: edit_message(chat_id, msg_id, "📤 **Uploading unlocked document package back...**")
-                
+                if msg_id: edit_message(chat_id, msg_id, "📤 **Uploading unlocked package...**")
                 send_document(chat_id, out_path, f"✅ **Done! Password removed successfully.**\n\n📢 Join {CHANNEL_TAG}")
                 
                 if msg_id:
-                    url = f"{TELEGRAM_API}/deleteMessage"
-                    requests.post(url, json={"chat_id": chat_id, "message_id": msg_id})
+                    requests.post(f"{TELEGRAM_API}/deleteMessage", json={"chat_id": chat_id, "message_id": msg_id})
                     
             except Exception as e:
                 err_str = str(e)
                 if "Bad password" in err_str or "Wrong password" in err_str:
                     if msg_id: edit_message(chat_id, msg_id, "❌ **Incorrect password.** Reply to the zip message again with the correct key.")
                 else:
-                    if msg_id: edit_message(chat_id, msg_id, f"❌ **Error occurred during pipeline processing:** {err_str}")
+                    if msg_id: edit_message(chat_id, msg_id, f"❌ **Error:** {err_str}")
             finally:
                 cleanup(in_path, out_path)
 
-class handler(BaseHTTPRequestHandler):
-    def do_POST(self):
-        content_length = int(self.headers['Content-Length'])
-        post_data = self.rfile.read(content_length).decode('utf-8')
-        
-        try:
-            update = json.loads(post_data)
-            process_bot_logic(update)
-        except Exception as e:
-            print(f"Serverless callback handling execution error: {e}")
-            
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b'OK')
+@app.post("/api")
+async def webhook_handler(request: Request, background_tasks: BackgroundTasks):
+    """FastAPI production entrypoint mapping webhook streams safely"""
+    try:
+        body = await request.json()
+        # Non-blocking async thread execution
+        background_tasks.add_task(process_bot_logic, body)
+    except Exception as e:
+        print(f"FastAPI error: {e}")
+    return {"status": "ok"}
