@@ -6,7 +6,7 @@ from telethon import TelegramClient, events, Button
 import pyzipper
 from FastTelethonhelper import fast_upload
 
-# ================= CONFIGURATION (from environment / GitHub Secrets) =================
+# ================= CONFIGURATION (from environment / GitHub Actions) =================
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
@@ -50,7 +50,7 @@ def render_bar(step_label, step_no, total_steps, current, total):
     filled = int(bar_len * pct / 100)
     bar = "▰" * filled + "▱" * (bar_len - filled)
     return (
-        f"**{step_label}**  ·  Step {step_no}/{total_steps}\n\n"
+        f"**{step_label}** ·  Step {step_no}/{total_steps}\n\n"
         f"`{bar}` {pct:.1f}%\n"
         f"{human(current)} / {human(total)}"
     )
@@ -190,7 +190,7 @@ async def start(event):
         "Send a password-protected `.zip` file (up to 200MB) and I'll strip the "
         "password and hand it right back to you — no software, no hassle.\n\n"
         "**How it works:**\n"
-        "1️⃣ Send the `.zip` file\n"
+        "1️⃣ Send the `.zip` file (Direct or Forwarded)\n"
         "2️⃣ Send its password\n"
         "3️⃣ Get the unlocked file back — live progress shown at every step\n\n"
         "Send /cancel anytime to stop.",
@@ -213,18 +213,27 @@ async def cancel(event):
 async def handle_message(event):
     uid = str(event.sender_id)
 
-    # ---- Step 1: receiving the zip file ----
-    if event.document:
-        fname = (event.file.name or "file.zip")
+    # ---- Step 1: receiving the zip file (Direct & Forwarded Messages support) ----
+    if event.message.media and hasattr(event.message.media, 'document'):
+        document = event.message.media.document
+        
+        fname = "file.zip"
+        if document.attributes:
+            for attr in document.attributes:
+                if hasattr(attr, 'file_name'):
+                    fname = attr.file_name
+                    break
+                    
         if not fname.lower().endswith(".zip"):
-            await event.reply("⚠️ Please send a `.zip` file.", buttons=Button.clear())
-            return
-        if event.file.size > MAX_SIZE:
+            return  # Not a zip file, ignore or reply
+
+        file_size = document.size
+        if file_size > MAX_SIZE:
             await event.reply(f"⚠️ **File too large.** Max supported size is {human(MAX_SIZE)}.", buttons=Button.clear())
             return
 
         status = await event.reply(
-            render_bar("📥 Downloading File", 1, 3, 0, event.file.size or 1),
+            render_bar("📥 Downloading File", 1, 3, 0, file_size or 1),
             buttons=Button.clear(),
         )
         path = os.path.join(WORK_DIR, f"{uid}_{int(time.time())}.zip")
