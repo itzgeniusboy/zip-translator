@@ -2,3 +2,4 @@ telethon
 pyzipper
 cryptg
 FastTelethonhelper
+requests
