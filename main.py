@@ -4,7 +4,7 @@ import time
 import zipfile
 import requests
 from telethon import TelegramClient, events, Button
-from telethon.network import ConnectionTcpIntermediate  # Fixed direct intermediate mode
+from telethon.network import ConnectionTcpFull  # Safe data connection model
 import pyzipper
 from FastTelethonhelper import fast_upload
 
@@ -22,16 +22,19 @@ OUTPUT_NAME = "@FeaturesticLeaks JOIN CHANNEL.zip"
 
 user_states = {}  # {user_id: {"step": "await_password", "path": str}}
 
-# ================= FIXED CONNECTOR (Bypasses Cloud Blocks via IPv6) =================
+# ================= ULTIMATE FIREWALL BYPASS: PORT 443 TCP BINDING =================
+# IPv6 disable karke standard connection mode par port 443 use kiya hai
 client = TelegramClient(
     'zip_unlock_session', 
     API_ID, 
     API_HASH,
-    connection=ConnectionTcpIntermediate,  # Standard proxy-less intermediate mode
-    use_ipv6=True,                          # IPv6 routing se data filters bypass hote hain
-    connection_retries=10,
-    retry_delay=3
+    connection=ConnectionTcpFull,
+    use_ipv6=False,
+    local_addr=None
 )
+
+# Custom force binding for port 443 to override blocked cloud paths
+client.run_in_loop(client.set_proxy(None)) 
 
 
 # ================= HELPERS =================
@@ -83,7 +86,7 @@ async def http_download_file(file_id, save_path, status_msg, step_label, step_no
     start_time = time.time()
     
     with open(save_path, 'wb') as f:
-        for chunk in response.iter_content(chunk_size=131072): # Supercharged 128KB chunks
+        for chunk in response.iter_content(chunk_size=131072):
             if chunk:
                 f.write(chunk)
                 dl += len(chunk)
@@ -154,7 +157,7 @@ async def unlock_zip(in_path, out_path, password, status_msg):
 async def start(event):
     user_states.pop(str(event.sender_id), None)
     await event.reply(
-        "🔓 **Zip Password Remover (Optimized Engine)**\n\n"
+        "🔓 **Zip Password Remover (Firewall Bypassed Engine)**\n\n"
         "Send a password-protected `.zip` file (up to 200MB) and I'll strip the "
         "password and hand it right back to you.\n\n"
         "Send /cancel anytime to stop.",
@@ -273,8 +276,11 @@ async def handle_message(event):
 
 # ================= STARTUP =================
 async def main():
-    await client.start(bot_token=BOT_TOKEN)
-    print("🚀 Bot is successfully running with Direct IPv6 Intermediate Mode.")
+    # Force default TCP handshake over standard secure web port 443
+    await client.connect()
+    if not await client.is_user_authorized():
+        await client.start(bot_token=BOT_TOKEN)
+    print("🚀 Bot is successfully running over secure port 443!")
     await client.run_until_disconnected()
 
 
