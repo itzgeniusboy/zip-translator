@@ -4,7 +4,7 @@ import time
 import zipfile
 from telethon import TelegramClient, events, Button
 import pyzipper
-from FastTelethonhelper import fast_upload, fast_download
+from FastTelethonhelper import fast_upload
 
 # ================= CONFIGURATION (from environment / GitHub Secrets) =================
 API_ID = int(os.environ["API_ID"])
@@ -41,19 +41,49 @@ def cleanup(*paths):
             pass
 
 
-def make_progress_fn(label, start_time):
-    def progress_str(done, total):
-        pct = (done / total * 100) if total else 0
-        elapsed = max(time.time() - start_time, 0.01)
-        speed = done / elapsed
-        eta = (total - done) / speed if speed > 0 else 0
-        bar_len = 20
-        filled = int(bar_len * pct / 100)
-        bar = "█" * filled + "░" * (bar_len - filled)
-        return (f"{label}\n[{bar}] {pct:.1f}%\n"
-                f"{human(done)} / {human(total)}\n"
-                f"⚡ {human(speed)}/s · ⏳ ETA {int(eta)}s")
-    return progress_str
+def render_bar(step_label, step_no, total_steps, current, total):
+    pct = (current / total * 100) if total else 0
+    bar_len = 20
+    filled = int(bar_len * pct / 100)
+    bar = "▰" * filled + "▱" * (bar_len - filled)
+    return (
+        f"**{step_label}**  ·  Step {step_no}/{total_steps}\n\n"
+        f"`{bar}` {pct:.1f}%\n"
+        f"{human(current)} / {human(total)}"
+    )
+
+
+class ProgressTracker:
+    """Reliable, live-updating progress message with percentage, speed, and ETA."""
+
+    def __init__(self, status_msg, step_label, step_no, total_steps=3, total_override=None):
+        self.msg = status_msg
+        self.step_label = step_label
+        self.step_no = step_no
+        self.total_steps = total_steps
+        self.start = time.time()
+        self.last_edit = 0
+        self.total_override = total_override
+
+    async def callback(self, current, total):
+        total = self.total_override or total
+        now = time.time()
+        if now - self.last_edit < 1.5 and current < total:
+            return
+        self.last_edit = now
+
+        elapsed = max(now - self.start, 0.01)
+        speed = current / elapsed
+        eta = (total - current) / speed if speed > 0 else 0
+
+        text = (
+            render_bar(self.step_label, self.step_no, self.total_steps, current, total)
+            + f"\n⚡ {human(speed)}/s  ·  ⏳ ETA {int(eta)}s"
+        )
+        try:
+            await self.msg.edit(text)
+        except Exception:
+            pass
 
 
 async def unlock_zip(in_path, out_path, password, status_msg):
@@ -71,10 +101,8 @@ async def unlock_zip(in_path, out_path, password, status_msg):
         raise RuntimeError(f"Could not open zip: {e}")
 
     total_bytes = sum(i.file_size for i in infos) or 1
-    start_time = time.time()
-    progress_fn = make_progress_fn("🔓 Removing password", start_time)
+    tracker = ProgressTracker(status_msg, "🔐 Removing Password", 2, total_override=total_bytes)
     processed = 0
-    last_edit = 0
 
     out = None
     try:
@@ -89,17 +117,11 @@ async def unlock_zip(in_path, out_path, password, status_msg):
 
             await loop.run_in_executor(None, out.writestr, info.filename, data)
             processed += info.file_size
-
-            now = time.time()
-            if now - last_edit >= 2 or processed >= total_bytes:
-                last_edit = now
-                try:
-                    await status_msg.edit(progress_fn(processed, total_bytes))
-                except Exception:
-                    pass
+            await tracker.callback(processed, total_bytes)
 
         out.close()
         zf.close()
+        await tracker.callback(total_bytes, total_bytes)
     except Exception:
         if out:
             out.close()
@@ -113,11 +135,14 @@ async def start(event):
     user_states.pop(str(event.sender_id), None)
     await event.reply(
         "🔓 **Zip Password Remover**\n\n"
-        "1️⃣ Send me a password-protected `.zip` file (up to 200MB)\n"
-        "2️⃣ Send the password when I ask\n"
-        "3️⃣ Get back the same zip — unlocked, no password needed\n\n"
-        "Send /cancel anytime to stop the current job.",
-        buttons=Button.clear(),  # removes any leftover keyboard from another bot/session
+        "Send a password-protected `.zip` file (up to 200MB) and I'll strip the "
+        "password and hand it right back to you — no software, no hassle.\n\n"
+        "**How it works:**\n"
+        "1️⃣ Send the `.zip` file\n"
+        "2️⃣ Send its password\n"
+        "3️⃣ Get the unlocked file back — live progress shown at every step\n\n"
+        "Send /cancel anytime to stop.",
+        buttons=Button.clear(),
     )
 
 
@@ -127,9 +152,9 @@ async def cancel(event):
     state = user_states.pop(uid, None)
     if state:
         cleanup(state.get("path"))
-        await event.reply("❌ Cancelled. Temporary files cleared.", buttons=Button.clear())
+        await event.reply("❌ **Cancelled.** Temporary files cleared.", buttons=Button.clear())
     else:
-        await event.reply("ℹ️ Nothing in progress.", buttons=Button.clear())
+        await event.reply("ℹ️ Nothing in progress right now.", buttons=Button.clear())
 
 
 @client.on(events.NewMessage())
@@ -143,26 +168,28 @@ async def handle_message(event):
             await event.reply("⚠️ Please send a `.zip` file.", buttons=Button.clear())
             return
         if event.file.size > MAX_SIZE:
-            await event.reply(f"⚠️ **Too large.** Max supported size is {human(MAX_SIZE)}.", buttons=Button.clear())
+            await event.reply(f"⚠️ **File too large.** Max supported size is {human(MAX_SIZE)}.", buttons=Button.clear())
             return
 
-        status = await event.reply("📥 Starting download...", buttons=Button.clear())
-        start_time = time.time()
-        progress_fn = make_progress_fn("📥 Downloading", start_time)
+        status = await event.reply(
+            render_bar("📥 Downloading File", 1, 3, 0, event.file.size or 1),
+            buttons=Button.clear(),
+        )
+        path = os.path.join(WORK_DIR, f"{uid}_{int(time.time())}.zip")
+        tracker = ProgressTracker(status, "📥 Downloading File", 1)
 
         try:
-            path = await fast_download(
-                client, event.message,
-                reply=status,
-                download_folder=WORK_DIR,
-                progress_bar_function=progress_fn,
-            )
+            await event.download_media(file=path, progress_callback=tracker.callback)
         except Exception as e:
-            await status.edit(f"❌ Download failed: {e}")
+            await status.edit(f"❌ **Download failed:** {e}")
+            cleanup(path)
             return
 
         user_states[uid] = {"step": "await_password", "path": path}
-        await status.edit("✅ **Download complete.**\n🔑 Now send the password for this zip:")
+        await status.edit(
+            "✅ **File received successfully.**\n\n"
+            "🔑 Please send the **password** for this zip to continue:"
+        )
         return
 
     # ---- Step 2: receiving the password ----
@@ -171,11 +198,11 @@ async def handle_message(event):
         in_path = user_states[uid]["path"]
         out_path = os.path.join(WORK_DIR, f"{uid}_{int(time.time())}_unlocked.zip")
 
-        status = await event.reply("🔓 Removing password...")
+        status = await event.reply(render_bar("🔐 Removing Password", 2, 3, 0, 1))
         try:
             await unlock_zip(in_path, out_path, text, status)
         except RuntimeError as e:
-            await status.edit(f"❌ **Failed.** {e}\n\nSend the correct password, or /cancel to stop.")
+            await status.edit(f"❌ **Incorrect password or unsupported format.**\n{e}\n\nSend the correct password, or /cancel to stop.")
             return
         except Exception as e:
             await status.edit(f"❌ **Unexpected error:** {e}")
@@ -184,24 +211,32 @@ async def handle_message(event):
             return
 
         # ---- Step 3: fast, parallel upload with live progress ----
-        upload_status = await event.reply("📤 Starting upload...")
+        upload_status = await event.reply(render_bar("📤 Uploading Unlocked File", 3, 3, 0, 1))
         upload_start = time.time()
-        progress_fn = make_progress_fn("📤 Uploading", upload_start)
+
+        def progress_str(done, total):
+            elapsed = max(time.time() - upload_start, 0.01)
+            speed = done / elapsed
+            eta = (total - done) / speed if speed > 0 else 0
+            return (
+                render_bar("📤 Uploading Unlocked File", 3, 3, done, total)
+                + f"\n⚡ {human(speed)}/s  ·  ⏳ ETA {int(eta)}s"
+            )
 
         try:
             file_obj = await fast_upload(
                 client, out_path,
                 reply=upload_status,
                 name=OUTPUT_NAME,
-                progress_bar_function=progress_fn,
+                progress_bar_function=progress_str,
             )
             await client.send_file(
                 event.chat_id, file_obj,
-                caption=f"✅ **Password removed!**\n\n📢 Join {CHANNEL_TAG} for more.",
+                caption=f"✅ **Done! Password removed successfully.**\n\n📢 Join {CHANNEL_TAG} for more.",
                 force_document=True,
             )
         except Exception as e:
-            await upload_status.edit(f"❌ Upload failed: {e}")
+            await upload_status.edit(f"❌ **Upload failed:** {e}")
         finally:
             cleanup(in_path, out_path)
             user_states.pop(uid, None)
